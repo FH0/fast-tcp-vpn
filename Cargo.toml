@@ -7,3 +7,8 @@ edition = "2021"
 name = "fast-tcp-vpn"
 path = "main.rs"
 
+[dependencies]
+tun = "0.6"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+
