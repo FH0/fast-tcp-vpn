@@ -1,36 +1,75 @@
 use etherparse::{Ipv4Header, TcpHeader};
 use std::net::Ipv4Addr;
-use std::process::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 
+async fn init_tun(
+    name: &str,
+    addr: Ipv4Addr,
+    netmask: Ipv4Addr,
+) -> Result<tun::AsyncDevice, Box<dyn std::error::Error>> {
+    let mut config = tun::Configuration::default();
+    config.address(addr).netmask(netmask).up().tun_name(name);
+    let mut device = tun::create_as_async(&config)?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    device.persist()?;
+    Ok(device)
+}
+
+fn init_raw_tcp(
+    addr: Ipv4Addr,
+) -> Result<tokio::io::unix::AsyncFd<i32>, Box<dyn std::error::Error>> {
+    unsafe {
+        let sock = libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_TCP);
+        if sock == -1 {
+            return Err("Failed to create raw socket".into());
+        }
+
+        let bind_addr = libc::sockaddr_in {
+            sin_family: libc::AF_INET as u16,
+            sin_port: 0,
+            sin_addr: libc::in_addr {
+                s_addr: u32::from(addr).to_be(),
+            },
+            sin_zero: [0; 8],
+        };
+        if libc::bind(
+            sock,
+            &bind_addr as *const libc::sockaddr_in as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as u32,
+        ) == -1
+        {
+            libc::close(sock);
+            return Err("Failed to bind raw socket".into());
+        }
+
+        let flags = libc::fcntl(sock, libc::F_GETFL, 0);
+        if flags == -1 {
+            libc::close(sock);
+            return Err("Failed to get socket flags".into());
+        }
+        let ret = libc::fcntl(sock, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        if ret == -1 {
+            libc::close(sock);
+            return Err("Failed to set socket to non-blocking".into());
+        }
+
+        let async_fd = tokio::io::unix::AsyncFd::new(sock)?;
+        Ok(async_fd)
+    }
+}
+
 /// 集成测试：测试通过 TUN 接口发送 TCP SYN 包并接收 ACK 响应
 #[tokio::test]
 async fn test_tcp_syn_ack() -> Result<(), Box<dyn std::error::Error>> {
-    // 创建 TUN 接口
-    let tun_name = "tun0";
-    if Command::new("ip")
-        .args(&["link", "show", tun_name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        let _ = Command::new("ip")
-            .args(&["link", "delete", tun_name])
-            .output();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    let mut config = tun::Configuration::default();
-    config
-        .address((10, 0, 0, 1))
-        .netmask((255, 0, 0, 0))
-        .up()
-        .tun_name(tun_name);
-    let device = tun::create_as_async(&config)?;
+    let device = init_tun(
+        "tun0",
+        Ipv4Addr::new(10, 0, 0, 1),
+        Ipv4Addr::new(255, 0, 0, 0),
+    )
+    .await?;
     let (mut reader, mut writer) = tokio::io::split(device);
-    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 启动 TCP 监听器
     let listener = TcpListener::bind("0.0.0.0:1234").await?;
@@ -87,6 +126,63 @@ async fn test_tcp_syn_ack() -> Result<(), Box<dyn std::error::Error>> {
     assert!(tcp_header.ack && tcp_header.syn);
 
     listener_handle.abort();
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_raw_tcp_syn() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        let raw_tcp = init_raw_tcp(Ipv4Addr::new(127, 0, 0, 1))?;
+        let mut buffer = [0u8; 1500];
+        let mut count = 0;
+
+        loop {
+            let _guard = raw_tcp.readable().await?;
+            loop {
+                let nread = libc::recv(
+                    *raw_tcp.get_ref(),
+                    buffer.as_mut_ptr() as *mut libc::c_void,
+                    buffer.len(),
+                    0,
+                );
+                if nread < 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::WouldBlock {
+                        break;
+                    }
+                    return Err(err.into());
+                }
+                println!("Received {} bytes", nread);
+                if nread <= 0 {
+                    break;
+                }
+
+                let slice = &buffer[..nread as usize];
+                let ip_header = etherparse::Ipv4HeaderSlice::from_slice(slice)?;
+                println!(
+                    "IPv4 header, len={}, src={:?}, dst={:?}",
+                    ip_header.ihl() * 4,
+                    ip_header.source(),
+                    ip_header.destination()
+                );
+
+                let tcp_payload = &slice[(ip_header.ihl() * 4) as usize..];
+                if let Ok(tcp_header) = etherparse::TcpHeaderSlice::from_slice(tcp_payload) {
+                    println!(
+                        "  TCP header, src_port={}, dst_port={}",
+                        tcp_header.source_port(),
+                        tcp_header.destination_port()
+                    );
+                }
+                count += 1;
+            }
+
+            if count >= 5 {
+                break;
+            }
+        }
+    }
 
     Ok(())
 }

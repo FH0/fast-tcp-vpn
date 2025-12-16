@@ -1,10 +1,8 @@
 ---
-description: 项目代码规范和开发规则
-globs: ["**/*.rs", "**/*.toml", "**/*.sh"]
-alwaysApply: true
+trigger: always_on
 ---
 
-# Cursor 项目规则
+# 项目代码规范和开发规则
 
 - 代码注释使用中文，其他地方使用英文
 - 日志使用英文
