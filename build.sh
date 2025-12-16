@@ -31,10 +31,10 @@ done
 if [ -n "$RUN_TEST" ]; then
     if [ -n "$TEST_NAME" ]; then
         echo "正在运行测试: $TEST_NAME"
-        timeout 20 cargo test --release -- --nocapture "$TEST_NAME"
+        timeout 10 cargo test --release -- --nocapture "$TEST_NAME"
     else
         echo "正在运行所有测试..."
-        timeout 20 cargo test --release -- --nocapture
+        timeout 10 cargo test --release -- --nocapture
     fi
     exit 0
 fi
