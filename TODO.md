@@ -57,11 +57,11 @@
 - [x] **1.1.6** 单元测试: 校验和正确性
 
 ### 1.2 Raw Socket 抽象
-- [ ] **1.2.1** 定义 `trait PacketSender` 接口
-- [ ] **1.2.2** 定义 `trait PacketReceiver` 接口
-- [ ] **1.2.3** 实现 Linux Raw Socket (基于 pnet)
-- [ ] **1.2.4** 实现 Mock Socket (用于测试)
-- [ ] **1.2.5** 集成测试: 发送/接收真实 TCP SYN
+- [x] **1.2.1** 定义 `trait PacketSender` 接口
+- [x] **1.2.2** 定义 `trait PacketReceiver` 接口
+- [x] **1.2.3** 实现 Linux Raw Socket (基于 libc)
+- [x] **1.2.4** 实现 Mock Socket (用于测试)
+- [x] **1.2.5** 集成测试: 发送/接收真实 TCP SYN
 
 ### 1.3 TUN 设备抽象
 - [ ] **1.3.1** 定义 `trait TunDevice` 接口 (read/write IP包)
@@ -217,11 +217,11 @@
 
 ## 当前进度
 
-**已完成**: 6 / 89 项
+**已完成**: 11 / 89 项
 
 **当前阶段**: Phase 1 - 基础设施层
 
-**下一步**: 1.2.1 定义 `trait PacketSender` 接口
+**下一步**: 1.3.1 定义 `trait TunDevice` 接口
 
 ---
 
