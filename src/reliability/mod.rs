@@ -1,5 +1,6 @@
 pub mod deduplication;
 pub mod rate_control;
+pub mod receive_buffer;
 pub mod redundancy;
 pub mod send_window;
 
@@ -8,6 +9,9 @@ pub use deduplication::{
     SlidingWindowDeduplicator,
 };
 pub use rate_control::{LeakyBucket, RateControlConfig, RateControlStats, RateController};
+pub use receive_buffer::{
+    BufferedPacket, ReceiveBuffer, ReceiveBufferConfig, ReceiveBufferStats,
+};
 pub use redundancy::{
     AdaptiveStrategy, FixedMultiplierStrategy, PacketLossTracker, RedundancyStrategy,
 };
