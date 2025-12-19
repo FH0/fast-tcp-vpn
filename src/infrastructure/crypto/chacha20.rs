@@ -15,6 +15,14 @@ pub struct ChaCha20Poly1305 {
     key: [u8; KEY_LEN],
 }
 
+impl std::fmt::Debug for ChaCha20Poly1305 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChaCha20Poly1305")
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
+
 impl ChaCha20Poly1305 {
     /// 创建新的加密器
     ///
