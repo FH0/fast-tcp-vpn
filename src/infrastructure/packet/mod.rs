@@ -2,11 +2,13 @@ mod ip;
 mod tcp;
 mod checksum;
 mod error;
+mod transport;
 
 pub use ip::*;
 pub use tcp::*;
 pub use checksum::*;
 pub use error::*;
+pub use transport::*;
 
 use std::net::Ipv4Addr;
 
@@ -152,6 +154,70 @@ impl Packet {
     }
 }
 
+/// 通用 IP 数据包（支持任意协议：TCP/UDP/ICMP 等）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IpPacket {
+    /// 原始字节数据
+    pub raw: Vec<u8>,
+    /// IP 头（已解析）
+    pub ip_header: IpHeader,
+    /// Payload 起始偏移
+    pub payload_offset: usize,
+}
+
+impl IpPacket {
+    /// 从原始字节解析（不限制协议类型）
+    pub fn parse(data: &[u8]) -> Result<Self, PacketError> {
+        if data.len() < IpHeader::MIN_LEN {
+            return Err(PacketError::TooShort {
+                expected: IpHeader::MIN_LEN,
+                actual: data.len(),
+            });
+        }
+
+        let ip_header = IpHeader::parse(data)?;
+        let payload_offset = ip_header.header_len();
+
+        if data.len() < payload_offset {
+            return Err(PacketError::TooShort {
+                expected: payload_offset,
+                actual: data.len(),
+            });
+        }
+
+        Ok(Self {
+            raw: data.to_vec(),
+            ip_header,
+            payload_offset,
+        })
+    }
+
+    /// 获取 payload（IP 头之后的所有数据）
+    pub fn payload(&self) -> &[u8] {
+        &self.raw[self.payload_offset..]
+    }
+
+    /// 转换为字节
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.raw.clone()
+    }
+
+    /// 获取协议类型
+    pub fn protocol(&self) -> u8 {
+        self.ip_header.protocol
+    }
+
+    /// 获取源 IP
+    pub fn src_ip(&self) -> Ipv4Addr {
+        self.ip_header.src_ip
+    }
+
+    /// 获取目标 IP
+    pub fn dst_ip(&self) -> Ipv4Addr {
+        self.ip_header.dst_ip
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +291,123 @@ mod tests {
 
         assert!(parsed.payload.is_empty());
         assert!(parsed.verify_checksums().is_ok());
+    }
+
+    // ==================== IpPacket 测试 ====================
+
+    #[test]
+    fn test_ip_packet_parse_tcp() {
+        // 构造一个 TCP 包
+        let src_ip = Ipv4Addr::new(192, 168, 1, 1);
+        let dst_ip = Ipv4Addr::new(192, 168, 1, 2);
+        let payload = b"Hello, TCP!".to_vec();
+
+        let packet = Packet::new(src_ip, dst_ip, 12345, 80, payload.clone());
+        let bytes = packet.to_bytes();
+
+        // 使用 IpPacket 解析（不限制协议）
+        let ip_packet = IpPacket::parse(&bytes).expect("Failed to parse IP packet");
+
+        assert_eq!(ip_packet.ip_header.src_ip, src_ip);
+        assert_eq!(ip_packet.ip_header.dst_ip, dst_ip);
+        assert_eq!(ip_packet.ip_header.protocol, 6); // TCP
+        assert_eq!(ip_packet.payload_offset, 20); // 标准 IP 头长度
+        assert!(!ip_packet.payload().is_empty());
+    }
+
+    #[test]
+    fn test_ip_packet_parse_udp() {
+        // 手动构造一个 UDP 包（protocol = 17）
+        let bytes = vec![
+            0x45, 0x00, // Version=4, IHL=5, DSCP=0, ECN=0
+            0x00, 0x1C, // Total length = 28 (20 IP + 8 UDP)
+            0x00, 0x00, // Identification
+            0x00, 0x00, // Flags + Fragment offset
+            0x40, 0x11, // TTL=64, Protocol=17 (UDP)
+            0x00, 0x00, // Checksum (placeholder)
+            0xC0, 0xA8, 0x01, 0x01, // Src IP: 192.168.1.1
+            0xC0, 0xA8, 0x01, 0x02, // Dst IP: 192.168.1.2
+            // UDP header (8 bytes)
+            0x30, 0x39, // Src port: 12345
+            0x00, 0x50, // Dst port: 80
+            0x00, 0x08, // Length: 8
+            0x00, 0x00, // Checksum
+        ];
+
+        let ip_packet = IpPacket::parse(&bytes).expect("Failed to parse UDP packet");
+
+        assert_eq!(ip_packet.ip_header.protocol, 17); // UDP
+        assert_eq!(ip_packet.ip_header.src_ip, Ipv4Addr::new(192, 168, 1, 1));
+        assert_eq!(ip_packet.ip_header.dst_ip, Ipv4Addr::new(192, 168, 1, 2));
+        assert_eq!(ip_packet.payload().len(), 8); // UDP header
+    }
+
+    #[test]
+    fn test_ip_packet_parse_icmp() {
+        // 手动构造一个 ICMP 包（protocol = 1）
+        let bytes = vec![
+            0x45, 0x00, // Version=4, IHL=5
+            0x00, 0x1C, // Total length = 28 (20 IP + 8 ICMP)
+            0x00, 0x00, // Identification
+            0x00, 0x00, // Flags + Fragment offset
+            0x40, 0x01, // TTL=64, Protocol=1 (ICMP)
+            0x00, 0x00, // Checksum
+            0x0A, 0x00, 0x00, 0x01, // Src IP: 10.0.0.1
+            0x0A, 0x00, 0x00, 0x02, // Dst IP: 10.0.0.2
+            // ICMP Echo Request (8 bytes)
+            0x08, 0x00, // Type=8 (Echo), Code=0
+            0x00, 0x00, // Checksum
+            0x00, 0x01, // Identifier
+            0x00, 0x01, // Sequence
+        ];
+
+        let ip_packet = IpPacket::parse(&bytes).expect("Failed to parse ICMP packet");
+
+        assert_eq!(ip_packet.ip_header.protocol, 1); // ICMP
+        assert_eq!(ip_packet.ip_header.src_ip, Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(ip_packet.ip_header.dst_ip, Ipv4Addr::new(10, 0, 0, 2));
+        assert_eq!(ip_packet.payload().len(), 8); // ICMP header
+    }
+
+    #[test]
+    fn test_ip_packet_roundtrip() {
+        let original_bytes = vec![
+            0x45, 0x00, // Version=4, IHL=5
+            0x00, 0x28, // Total length = 40
+            0x12, 0x34, // Identification
+            0x40, 0x00, // Flags=DF, Fragment offset=0
+            0x40, 0x06, // TTL=64, Protocol=6 (TCP)
+            0xAB, 0xCD, // Checksum
+            0xC0, 0xA8, 0x00, 0x01, // Src IP: 192.168.0.1
+            0xC0, 0xA8, 0x00, 0x02, // Dst IP: 192.168.0.2
+            // TCP header (20 bytes)
+            0x00, 0x50, 0x01, 0xBB, // Ports: 80 -> 443
+            0x00, 0x00, 0x00, 0x01, // Seq
+            0x00, 0x00, 0x00, 0x00, // Ack
+            0x50, 0x02, // Data offset=5, Flags=SYN
+            0xFF, 0xFF, // Window
+            0x00, 0x00, // Checksum
+            0x00, 0x00, // Urgent ptr
+        ];
+
+        let ip_packet = IpPacket::parse(&original_bytes).expect("Failed to parse");
+        let roundtrip_bytes = ip_packet.to_bytes();
+
+        assert_eq!(roundtrip_bytes, original_bytes);
+    }
+
+    #[test]
+    fn test_ip_packet_too_short() {
+        let bytes = vec![0x45, 0x00, 0x00]; // Only 3 bytes
+        let result = IpPacket::parse(&bytes);
+        assert!(matches!(result, Err(PacketError::TooShort { .. })));
+    }
+
+    #[test]
+    fn test_ip_packet_invalid_version() {
+        let mut bytes = vec![0u8; 20];
+        bytes[0] = 0x60; // IPv6
+        let result = IpPacket::parse(&bytes);
+        assert!(matches!(result, Err(PacketError::InvalidIpVersion { version: 6 })));
     }
 }
