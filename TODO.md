@@ -197,7 +197,7 @@
 
 ## Phase 6: 端到端测试
 
-- [ ] **6.1** 本地回环测试 (同机 server + client)
+- [x] **6.1** 本地回环测试 (同机 server + client)
 - [ ] **6.2** 局域网测试 (两台 Linux)
 - [ ] **6.3** 跨平台测试 (Linux server + Windows client)
 - [ ] **6.4** 丢包模拟测试 (tc netem)
