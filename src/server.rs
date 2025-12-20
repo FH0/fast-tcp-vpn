@@ -263,8 +263,9 @@ impl VpnServer {
         let tun = Arc::new(tun);
         self.tun = Some(tun.clone());
 
-        // Create raw socket
-        let socket = LinuxRawSocket::new()?;
+        // Create raw socket (服务端模式，自动添加 iptables 规则禁用内核 RST 包)
+        let listen_port = self.config.listen_addr.port();
+        let socket = LinuxRawSocket::new_server(listen_port)?;
         let socket = Arc::new(socket);
         self.socket = Some(socket.clone());
 

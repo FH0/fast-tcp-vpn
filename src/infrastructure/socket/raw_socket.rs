@@ -11,6 +11,9 @@ use std::time::Duration;
 /// 需要 root 权限或 CAP_NET_RAW capability
 pub struct LinuxRawSocket {
     fd: RawFd,
+    /// 服务端监听端口（用于 iptables 规则管理）
+    /// 如果设置了端口，Drop 时会自动删除对应的 iptables 规则
+    listen_port: Option<u16>,
 }
 
 impl LinuxRawSocket {
@@ -50,7 +53,87 @@ impl LinuxRawSocket {
 
         Ok(Self {
             fd,
+            listen_port: None,
         })
+    }
+
+    /// 创建服务端 Raw Socket，并自动添加 iptables 规则禁用内核 RST 包
+    ///
+    /// # Arguments
+    /// * `listen_port` - 服务端监听端口
+    ///
+    /// # Returns
+    /// * `Ok(LinuxRawSocket)` - 成功创建
+    /// * `Err(SocketError)` - 创建失败
+    ///
+    /// # Note
+    /// 会自动添加 iptables 规则：
+    /// `iptables -A OUTPUT -p tcp --sport <port> --tcp-flags RST RST -j DROP`
+    /// 在 Drop 时会自动删除该规则
+    pub fn new_server(listen_port: u16) -> Result<Self, SocketError> {
+        // 先添加 iptables 规则
+        Self::add_iptables_rst_rule(listen_port)?;
+
+        // 创建 socket
+        match Self::new() {
+            Ok(mut socket) => {
+                socket.listen_port = Some(listen_port);
+                Ok(socket)
+            }
+            Err(e) => {
+                // 创建失败，清理 iptables 规则
+                let _ = Self::remove_iptables_rst_rule(listen_port);
+                Err(e)
+            }
+        }
+    }
+
+    /// 添加 iptables 规则禁用指定端口的 RST 包
+    fn add_iptables_rst_rule(port: u16) -> Result<(), SocketError> {
+        let output = std::process::Command::new("iptables")
+            .args([
+                "-A", "OUTPUT",
+                "-p", "tcp",
+                "--sport", &port.to_string(),
+                "--tcp-flags", "RST", "RST",
+                "-j", "DROP",
+            ])
+            .output()
+            .map_err(|e| SocketError::Io(e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(SocketError::IptablesError(format!(
+                "Failed to add iptables RST rule for port {}: {}",
+                port, stderr
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// 删除 iptables 规则
+    fn remove_iptables_rst_rule(port: u16) -> Result<(), SocketError> {
+        let output = std::process::Command::new("iptables")
+            .args([
+                "-D", "OUTPUT",
+                "-p", "tcp",
+                "--sport", &port.to_string(),
+                "--tcp-flags", "RST", "RST",
+                "-j", "DROP",
+            ])
+            .output()
+            .map_err(|e| SocketError::Io(e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(SocketError::IptablesError(format!(
+                "Failed to remove iptables RST rule for port {}: {}",
+                port, stderr
+            )));
+        }
+
+        Ok(())
     }
 
     /// 设置接收超时
@@ -104,6 +187,12 @@ impl LinuxRawSocket {
 
 impl Drop for LinuxRawSocket {
     fn drop(&mut self) {
+        // 如果是服务端 socket，删除 iptables 规则
+        if let Some(port) = self.listen_port {
+            if let Err(e) = Self::remove_iptables_rst_rule(port) {
+                eprintln!("Warning: Failed to remove iptables RST rule: {}", e);
+            }
+        }
         unsafe { libc::close(self.fd) };
     }
 }

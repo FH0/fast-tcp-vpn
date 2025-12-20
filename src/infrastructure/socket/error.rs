@@ -21,4 +21,7 @@ pub enum SocketError {
 
     #[error("Timeout")]
     Timeout,
+
+    #[error("iptables error: {0}")]
+    IptablesError(String),
 }
