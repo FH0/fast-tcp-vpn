@@ -401,6 +401,11 @@ impl Tunnel {
         &self.config
     }
 
+    /// Get the server virtual IP
+    pub fn server_ip(&self) -> VirtualIP {
+        self.config.server_ip
+    }
+
     /// Get the number of active sessions
     pub fn active_session_count(&self) -> usize {
         self.sessions.len()

@@ -14,11 +14,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::config::ServerConfig;
-use crate::infrastructure::packet::Packet;
+use crate::infrastructure::crypto::ChaCha20Poly1305;
+use crate::infrastructure::packet::{IpPacket, TransportPacket};
 use crate::infrastructure::socket::{LinuxRawSocket, PacketReceiver, PacketSender, SocketError};
 use crate::infrastructure::tun::{LinuxTun, TunConfig, TunDevice, TunError};
 use crate::tunnel::{
-    IpPool, SessionId, Tunnel, TunnelConfig, TunnelError, VirtualIP,
+    Encapsulator, IpPool, SessionId, Tunnel, TunnelConfig, TunnelError, VirtualIP,
 };
 
 /// Server error types
@@ -418,7 +419,9 @@ impl VpnServer {
         Ok(())
     }
 
-    /// Worker: Read from TUN, encrypt payload only, send via socket
+    /// Worker: Read from TUN, encapsulate and encrypt entire IP packet, send via socket
+    ///
+    /// 支持所有 IP 协议（TCP/UDP/ICMP 等）
     fn tun_to_socket_worker(
         tun: Arc<LinuxTun>,
         socket: Arc<LinuxRawSocket>,
@@ -426,9 +429,19 @@ impl VpnServer {
         clients: Arc<RwLock<HashMap<u64, ClientInfo>>>,
         shutdown: Arc<AtomicBool>,
         stats: Arc<RwLock<ServerStats>>,
-        _psk: [u8; 32],
+        psk: [u8; 32],
     ) {
         let mut buffer = [0u8; 65535];
+
+        // 创建封装器
+        let encryptor = match ChaCha20Poly1305::new(&psk) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("Failed to create encryptor: {}", e);
+                return;
+            }
+        };
+        let encapsulator = Encapsulator::new(encryptor);
 
         while !shutdown.load(Ordering::Relaxed) {
             // Read from TUN with timeout
@@ -445,14 +458,19 @@ impl VpnServer {
                 continue; // Too short for IP header
             }
 
-            // Parse the packet to extract payload
-            let mut packet = match Packet::parse(&buffer[..len]) {
+            // 验证是 IPv4 包
+            if (buffer[0] >> 4) != 4 {
+                continue; // Not IPv4
+            }
+
+            // 解析 IP 包（支持任意协议）
+            let ip_packet = match IpPacket::parse(&buffer[..len]) {
                 Ok(p) => p,
-                Err(_) => continue, // Not a valid TCP packet
+                Err(_) => continue,
             };
 
-            // Extract destination IP from packet
-            let dst_ip = packet.ip_header.dst_ip;
+            // 提取目标 IP（用于路由）
+            let dst_ip = ip_packet.dst_ip();
 
             // Find session for this destination
             let tunnel_guard = tunnel.read().unwrap();
@@ -469,33 +487,40 @@ impl VpnServer {
             let session_id = session.id();
             drop(tunnel_guard);
 
-            // Only encrypt the payload, keep IP/TCP headers intact
-            if !packet.payload.is_empty() {
-                let mut tunnel_guard = tunnel.write().unwrap();
-                let tunnel_ref = match tunnel_guard.as_mut() {
-                    Some(t) => t,
+            // 获取客户端的真实 IP（从会话中获取，如果没有则使用目标 IP）
+            let peer_ip = dst_ip; // 在 VPN 场景中，目标 IP 就是客户端的虚拟 IP
+
+            // 封装 + 加密整个 IP 包
+            let encrypted_payload = match encapsulator.encapsulate(&buffer[..len]) {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("Encapsulation error: {}", e);
+                    continue;
+                }
+            };
+
+            // 获取本地 IP
+            let local_ip = {
+                let tunnel_guard = tunnel.read().unwrap();
+                match tunnel_guard.as_ref() {
+                    Some(t) => t.server_ip().addr(),
                     None => continue,
-                };
+                }
+            };
 
-                let encrypted_payload = match tunnel_ref.encrypt(session_id, &packet.payload) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        eprintln!("Encryption error: {}", e);
-                        continue;
-                    }
-                };
-                drop(tunnel_guard);
-                packet.payload = encrypted_payload;
-            }
+            // 构造传输 TCP 包
+            let transport = TransportPacket::new(
+                local_ip,
+                peer_ip,
+                8443, // VPN port
+                8443,
+                encrypted_payload,
+            );
 
-            // Update total length and rebuild packet
-            let new_total_len = 20 + packet.tcp_header.header_len() + packet.payload.len();
-            packet.ip_header.total_length = new_total_len as u16;
-
-            let packet_bytes = packet.to_bytes();
+            let packet_bytes = transport.to_bytes();
 
             // Send via raw socket
-            if let Err(e) = socket.send_raw(&packet_bytes, dst_ip) {
+            if let Err(e) = socket.send_raw(&packet_bytes, peer_ip) {
                 eprintln!("Socket send error: {}", e);
                 continue;
             }
@@ -518,7 +543,9 @@ impl VpnServer {
         }
     }
 
-    /// Worker: Receive from socket, decrypt payload only, write to TUN
+    /// Worker: Receive from socket, decapsulate and decrypt, write to TUN
+    ///
+    /// 支持所有 IP 协议（TCP/UDP/ICMP 等）
     fn socket_to_tun_worker(
         socket: Arc<LinuxRawSocket>,
         tun: Arc<LinuxTun>,
@@ -531,6 +558,16 @@ impl VpnServer {
     ) {
         let mut buffer = [0u8; 65535];
 
+        // 创建解封装器
+        let encryptor = match ChaCha20Poly1305::new(&psk) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("Failed to create encryptor: {}", e);
+                return;
+            }
+        };
+        let encapsulator = Encapsulator::new(encryptor);
+
         while !shutdown.load(Ordering::Relaxed) {
             // Receive from socket with timeout
             let len = match socket.receive_raw(&mut buffer, Some(Duration::from_millis(100))) {
@@ -542,27 +579,59 @@ impl VpnServer {
                 }
             };
 
-            if len < 20 {
-                continue; // Too short for IP header
+            if len < 40 {
+                continue; // Too short for IP + TCP header
             }
 
-            // Parse the packet
-            let mut packet = match Packet::parse(&buffer[..len]) {
-                Ok(p) => p,
-                Err(_) => continue, // Not a valid TCP packet, skip
+            // 解析传输包（外层 TCP 包）
+            let transport = match TransportPacket::parse(&buffer[..len]) {
+                Ok(t) => t,
+                Err(_) => continue, // Not a valid transport packet
             };
 
-            // Extract source IP from packet
-            let src_ip = packet.ip_header.src_ip;
+            // 验证是 VPN 包（检查端口）
+            if transport.dst_port() != 8443 {
+                continue; // Not a VPN packet
+            }
 
-            // Check if this is from a known client
+            // 提取源 IP（用于日志或未来扩展）
+            let _src_ip = transport.src_ip();
+
+            // 如果 payload 为空，跳过
+            if transport.encrypted_payload.is_empty() {
+                continue;
+            }
+
+            // 解封装 + 解密
+            let original_ip_packet = match encapsulator.decapsulate(&transport.encrypted_payload) {
+                Ok(data) => data,
+                Err(e) => {
+                    eprintln!("Decapsulation error: {}", e);
+                    continue;
+                }
+            };
+
+            // 验证解密后的数据是有效的 IP 包
+            if original_ip_packet.len() < 20 || (original_ip_packet[0] >> 4) != 4 {
+                continue; // Not a valid IPv4 packet
+            }
+
+            // 从解密后的 IP 包中提取源 IP（客户端的虚拟 IP）
+            let client_vip = Ipv4Addr::new(
+                original_ip_packet[12],
+                original_ip_packet[13],
+                original_ip_packet[14],
+                original_ip_packet[15],
+            );
+
+            // Check if this is from a known client or create new session
             let tunnel_guard = tunnel.read().unwrap();
             let tunnel_ref = match tunnel_guard.as_ref() {
                 Some(t) => t,
                 None => continue,
             };
 
-            let session_opt = tunnel_ref.get_session_by_ip(VirtualIP::new(src_ip));
+            let session_opt = tunnel_ref.get_session_by_ip(VirtualIP::new(client_vip));
             let session_id = session_opt.map(|s| s.id());
             drop(tunnel_guard);
 
@@ -613,33 +682,8 @@ impl VpnServer {
                 }
             };
 
-            // Only decrypt the payload if it's not empty
-            if !packet.payload.is_empty() {
-                let mut tunnel_guard = tunnel.write().unwrap();
-                let tunnel_ref = match tunnel_guard.as_mut() {
-                    Some(t) => t,
-                    None => continue,
-                };
-
-                let decrypted_payload = match tunnel_ref.decrypt(session_id, &packet.payload) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        eprintln!("Decryption error: {}", e);
-                        continue;
-                    }
-                };
-                drop(tunnel_guard);
-                packet.payload = decrypted_payload;
-            }
-
-            // Update total length and rebuild packet
-            let new_total_len = 20 + packet.tcp_header.header_len() + packet.payload.len();
-            packet.ip_header.total_length = new_total_len as u16;
-
-            let packet_bytes = packet.to_bytes();
-
-            // Write to TUN
-            if let Err(e) = tun.write(&packet_bytes) {
+            // 将原始 IP 包写入 TUN
+            if let Err(e) = tun.write(&original_ip_packet) {
                 eprintln!("TUN write error: {}", e);
                 continue;
             }
