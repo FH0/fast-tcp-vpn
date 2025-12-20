@@ -356,6 +356,8 @@ impl VpnServer {
         tun: Arc<LinuxTun>,
         socket: Arc<LinuxRawSocket>,
     ) -> Result<(), ServerError> {
+        let listen_port = self.config.listen_addr.port();
+
         // TUN -> Socket worker (outbound traffic)
         let tun_reader = tun.clone();
         let socket_sender = socket.clone();
@@ -374,6 +376,7 @@ impl VpnServer {
                 shutdown,
                 stats,
                 psk,
+                listen_port,
             );
         });
         self.worker_handles.push(tun_to_socket_handle);
@@ -398,6 +401,7 @@ impl VpnServer {
                 stats,
                 psk,
                 max_clients,
+                listen_port,
             );
         });
         self.worker_handles.push(socket_to_tun_handle);
@@ -427,6 +431,7 @@ impl VpnServer {
         shutdown: Arc<AtomicBool>,
         stats: Arc<RwLock<ServerStats>>,
         psk: [u8; 32],
+        listen_port: u16,
     ) {
         let mut buffer = [0u8; 65535];
 
@@ -509,8 +514,8 @@ impl VpnServer {
             let transport = TransportPacket::new(
                 local_ip,
                 peer_ip,
-                8443, // VPN port
-                8443,
+                listen_port,
+                listen_port,
                 encrypted_payload,
             );
 
@@ -552,6 +557,7 @@ impl VpnServer {
         stats: Arc<RwLock<ServerStats>>,
         psk: [u8; 32],
         max_clients: u32,
+        listen_port: u16,
     ) {
         let mut buffer = [0u8; 65535];
 
@@ -587,7 +593,7 @@ impl VpnServer {
             };
 
             // 验证是 VPN 包（检查端口）
-            if transport.outer_tcp.dst_port != 8443 {
+            if transport.outer_tcp.dst_port != listen_port {
                 continue; // Not a VPN packet
             }
 

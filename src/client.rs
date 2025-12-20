@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use crate::config::ClientConfig;
 use crate::infrastructure::crypto::{ChaCha20Poly1305, KEY_LEN};
 use crate::infrastructure::packet::{IpPacket, TransportPacket};
-use crate::infrastructure::socket::{LinuxRawSocket, PacketReceiver, PacketSender, SocketError};
+use crate::infrastructure::socket::{LinuxRawSocket, PacketReceiver, PacketSender, SocketError, get_outbound_ip};
 use crate::infrastructure::tun::{LinuxTun, TunConfig, TunDevice, TunError};
 use crate::tunnel::{Encapsulator, Session, SessionError, SessionId, SessionState};
 
@@ -379,14 +379,18 @@ impl VpnClient {
         tun: Arc<LinuxTun>,
         socket: Arc<LinuxRawSocket>,
     ) -> Result<(), ClientError> {
+        // 获取本地出口 IP（用于外层 TCP 包的源地址）
+        let local_real_ip = get_outbound_ip(self.server_ip)
+            .map_err(|e| ClientError::Socket(e))?;
+
         // TUN -> Socket worker (outbound traffic)
         let tun_reader = tun.clone();
         let socket_sender = socket.clone();
         let shutdown = self.shutdown.clone();
         let stats = self.stats.clone();
         let server_ip = self.server_ip;
+        let server_port = self.config.server_addr.port();
         let psk = self.psk;
-        let local_vip = self.config.tunnel.address;
 
         let tun_to_socket_handle = thread::spawn(move || {
             Self::tun_to_socket_worker(
@@ -395,8 +399,9 @@ impl VpnClient {
                 shutdown,
                 stats,
                 server_ip,
+                server_port,
                 psk,
-                local_vip,
+                local_real_ip,
             );
         });
         self.worker_handles.push(tun_to_socket_handle);
@@ -407,6 +412,7 @@ impl VpnClient {
         let shutdown = self.shutdown.clone();
         let stats = self.stats.clone();
         let psk = self.psk;
+        let server_port = self.config.server_addr.port();
 
         let socket_to_tun_handle = thread::spawn(move || {
             Self::socket_to_tun_worker(
@@ -415,6 +421,7 @@ impl VpnClient {
                 shutdown,
                 stats,
                 psk,
+                server_port,
             );
         });
         self.worker_handles.push(socket_to_tun_handle);
@@ -442,8 +449,9 @@ impl VpnClient {
         shutdown: Arc<AtomicBool>,
         stats: Arc<RwLock<ClientStats>>,
         server_ip: Ipv4Addr,
+        server_port: u16,
         psk: [u8; KEY_LEN],
-        local_vip: Ipv4Addr,
+        local_real_ip: Ipv4Addr,
     ) {
         let mut buffer = [0u8; 65535];
 
@@ -492,12 +500,12 @@ impl VpnClient {
                 }
             };
 
-            // 构造传输 TCP 包
+            // 构造传输 TCP 包（使用真实本地 IP 作为源地址）
             let transport = TransportPacket::new(
-                local_vip,
+                local_real_ip,
                 server_ip,
-                8443, // VPN port
-                8443,
+                server_port,
+                server_port,
                 encrypted_payload,
             );
 
@@ -527,6 +535,7 @@ impl VpnClient {
         shutdown: Arc<AtomicBool>,
         stats: Arc<RwLock<ClientStats>>,
         psk: [u8; KEY_LEN],
+        server_port: u16,
     ) {
         let mut buffer = [0u8; 65535];
 
@@ -562,7 +571,7 @@ impl VpnClient {
             };
 
             // 验证是 VPN 包（检查端口）
-            if transport.outer_tcp.dst_port != 8443 && transport.outer_tcp.src_port != 8443 {
+            if transport.outer_tcp.dst_port != server_port && transport.outer_tcp.src_port != server_port {
                 continue; // Not a VPN packet
             }
 

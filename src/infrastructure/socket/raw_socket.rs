@@ -198,6 +198,61 @@ impl RawSocket for LinuxRawSocket {
     }
 }
 
+/// 获取到达指定目标 IP 的本地出口 IP
+///
+/// 通过创建一个 UDP socket 并 connect 到目标地址来确定本地出口 IP
+pub fn get_outbound_ip(dest: Ipv4Addr) -> Result<Ipv4Addr, SocketError> {
+    // 创建 UDP socket
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
+    if fd < 0 {
+        return Err(SocketError::Io(io::Error::last_os_error()));
+    }
+
+    // Connect 到目标地址（不会实际发送数据）
+    let sockaddr = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: 80u16.to_be(), // 任意端口
+        sin_addr: libc::in_addr {
+            s_addr: u32::from_ne_bytes(dest.octets()),
+        },
+        sin_zero: [0; 8],
+    };
+
+    let ret = unsafe {
+        libc::connect(
+            fd,
+            &sockaddr as *const _ as *const libc::sockaddr,
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+
+    if ret < 0 {
+        unsafe { libc::close(fd) };
+        return Err(SocketError::Io(io::Error::last_os_error()));
+    }
+
+    // 获取本地地址
+    let mut local_addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    let mut addr_len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+
+    let ret = unsafe {
+        libc::getsockname(
+            fd,
+            &mut local_addr as *mut _ as *mut libc::sockaddr,
+            &mut addr_len,
+        )
+    };
+
+    unsafe { libc::close(fd) };
+
+    if ret < 0 {
+        return Err(SocketError::Io(io::Error::last_os_error()));
+    }
+
+    let ip_bytes = local_addr.sin_addr.s_addr.to_ne_bytes();
+    Ok(Ipv4Addr::new(ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
