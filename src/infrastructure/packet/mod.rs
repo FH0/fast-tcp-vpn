@@ -202,20 +202,6 @@ impl IpPacket {
         self.raw.clone()
     }
 
-    /// 获取协议类型
-    pub fn protocol(&self) -> u8 {
-        self.ip_header.protocol
-    }
-
-    /// 获取源 IP
-    pub fn src_ip(&self) -> Ipv4Addr {
-        self.ip_header.src_ip
-    }
-
-    /// 获取目标 IP
-    pub fn dst_ip(&self) -> Ipv4Addr {
-        self.ip_header.dst_ip
-    }
 }
 
 #[cfg(test)]

@@ -210,8 +210,8 @@ impl ReceiveBuffer {
         let data_len = data.len();
 
         // Insert the packet
-        if !self.buffer.contains_key(&seq) {
-            self.buffer.insert(seq, BufferedPacket::new(seq, data));
+        if let std::collections::btree_map::Entry::Vacant(e) = self.buffer.entry(seq) {
+            e.insert(BufferedPacket::new(seq, data));
             self.buffered_bytes += data_len;
         }
 

@@ -136,7 +136,7 @@ heartbeat_timeout_secs = 90
 /// Start server in background
 fn start_server_background(config_path: &str) -> Child {
     Command::new(BINARY)
-        .args(&["server", "start", "--config", config_path])
+        .args(["server", "start", "--config", config_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -146,7 +146,7 @@ fn start_server_background(config_path: &str) -> Child {
 /// Start client in background
 fn start_client_background(config_path: &str) -> Child {
     Command::new(BINARY)
-        .args(&["client", "connect", "--config", config_path])
+        .args(["client", "connect", "--config", config_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -188,7 +188,7 @@ fn wait_for_client_connected(timeout_secs: u64) -> bool {
 #[allow(dead_code)]
 fn check_tun_interface(name: &str) -> bool {
     let output = Command::new("ip")
-        .args(&["link", "show", name])
+        .args(["link", "show", name])
         .output();
 
     match output {
@@ -289,7 +289,7 @@ fn test_e2e_tcp_echo_through_tunnel() {
 
     // Use socat to create echo server (if available)
     let echo_server = Command::new("socat")
-        .args(&[
+        .args([
             &format!("TCP-LISTEN:{},bind={},reuseaddr,fork", echo_port, SERVER_VPN_IP),
             "EXEC:cat",
         ])
@@ -409,7 +409,7 @@ fn test_e2e_udp_echo_through_tunnel() {
 
     // Start UDP echo server using socat
     let echo_server = Command::new("socat")
-        .args(&[
+        .args([
             &format!("UDP-LISTEN:{},bind={},fork", echo_port, SERVER_VPN_IP),
             "EXEC:cat",
         ])

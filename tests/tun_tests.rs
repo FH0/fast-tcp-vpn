@@ -188,7 +188,6 @@ fn test_linux_tun_creation() {
 #[ignore] // 需要 root 权限运行
 fn test_linux_tun_read_write() {
     use fast_tcp_vpn::infrastructure::tun::LinuxTun;
-    use std::thread;
 
     let config = TunConfig::new("test_tun1")
         .with_address(Ipv4Addr::new(10, 200, 1, 1))

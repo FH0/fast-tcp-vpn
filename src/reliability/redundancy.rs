@@ -569,14 +569,14 @@ mod tests {
         let adaptive = AdaptiveStrategy::new();
         let count2 = adaptive.get_redundancy_count(0);
         let copies2 = generate_redundant_packets(&packet, count2);
-        assert!(copies2.len() >= 1);
+        assert!(!copies2.is_empty());
     }
 
     // === Packet Loss Tracker Tests ===
 
     #[test]
     fn test_packet_loss_tracker_basic() {
-        let mut tracker = PacketLossTracker::new(10);
+        let tracker = PacketLossTracker::new(10);
 
         assert_eq!(tracker.loss_rate(), 0.0);
         assert_eq!(tracker.sample_count(), 0);

@@ -302,7 +302,7 @@ impl ChaCha20Poly1305 {
         // Add ciphertext with padding
         data.extend_from_slice(ciphertext);
         let pad_len = (16 - (ciphertext.len() % 16)) % 16;
-        data.extend(std::iter::repeat(0u8).take(pad_len));
+        data.extend(std::iter::repeat_n(0u8, pad_len));
 
         // Add lengths (no AAD, so aad_len = 0)
         data.extend_from_slice(&0u64.to_le_bytes());

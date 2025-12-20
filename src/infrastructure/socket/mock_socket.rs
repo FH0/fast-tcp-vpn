@@ -14,8 +14,6 @@ pub struct MockSocket {
     sent_packets: Arc<Mutex<Vec<Packet>>>,
     /// 待接收的数据包队列
     receive_queue: Arc<Mutex<VecDeque<Packet>>>,
-    /// 模拟的本地地址
-    local_addr: Option<Ipv4Addr>,
     /// 是否模拟发送失败
     fail_send: Arc<Mutex<bool>>,
     /// 是否模拟接收失败
@@ -28,18 +26,6 @@ impl MockSocket {
         Self {
             sent_packets: Arc::new(Mutex::new(Vec::new())),
             receive_queue: Arc::new(Mutex::new(VecDeque::new())),
-            local_addr: None,
-            fail_send: Arc::new(Mutex::new(false)),
-            fail_receive: Arc::new(Mutex::new(false)),
-        }
-    }
-
-    /// 创建带本地地址的 Mock Socket
-    pub fn with_local_addr(addr: Ipv4Addr) -> Self {
-        Self {
-            sent_packets: Arc::new(Mutex::new(Vec::new())),
-            receive_queue: Arc::new(Mutex::new(VecDeque::new())),
-            local_addr: Some(addr),
             fail_send: Arc::new(Mutex::new(false)),
             fail_receive: Arc::new(Mutex::new(false)),
         }
@@ -48,11 +34,6 @@ impl MockSocket {
     /// 获取所有已发送的数据包
     pub fn get_sent_packets(&self) -> Vec<Packet> {
         self.sent_packets.lock().unwrap().clone()
-    }
-
-    /// 清空已发送的数据包
-    pub fn clear_sent_packets(&self) {
-        self.sent_packets.lock().unwrap().clear();
     }
 
     /// 向接收队列添加数据包 (模拟收到数据)
@@ -164,7 +145,7 @@ impl PacketReceiver for MockSocket {
 
 impl RawSocket for MockSocket {
     fn local_addr(&self) -> Option<Ipv4Addr> {
-        self.local_addr
+        None
     }
 }
 

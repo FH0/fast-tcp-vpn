@@ -129,25 +129,6 @@ impl TransportPacket {
         result
     }
 
-    /// 获取源 IP
-    pub fn src_ip(&self) -> Ipv4Addr {
-        self.outer_ip.src_ip
-    }
-
-    /// 获取目标 IP
-    pub fn dst_ip(&self) -> Ipv4Addr {
-        self.outer_ip.dst_ip
-    }
-
-    /// 获取源端口
-    pub fn src_port(&self) -> u16 {
-        self.outer_tcp.src_port
-    }
-
-    /// 获取目标端口
-    pub fn dst_port(&self) -> u16 {
-        self.outer_tcp.dst_port
-    }
 }
 
 #[cfg(test)]

@@ -167,7 +167,7 @@ impl Fragmenter {
             return 0;
         }
         let payload_size = self.max_payload_size();
-        (data_len + payload_size - 1) / payload_size
+        data_len.div_ceil(payload_size)
     }
 
     /// Check if data needs fragmentation

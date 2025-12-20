@@ -134,13 +134,11 @@ fn test_client_error_display() {
 #[test]
 fn test_client_state_values() {
     // Test all state variants exist and are distinct
-    let states = vec![
-        ClientState::Disconnected,
+    let states = [ClientState::Disconnected,
         ClientState::Connecting,
         ClientState::Connected,
         ClientState::Reconnecting,
-        ClientState::Disconnecting,
-    ];
+        ClientState::Disconnecting];
 
     for (i, state1) in states.iter().enumerate() {
         for (j, state2) in states.iter().enumerate() {

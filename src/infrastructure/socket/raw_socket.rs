@@ -11,7 +11,6 @@ use std::time::Duration;
 /// 需要 root 权限或 CAP_NET_RAW capability
 pub struct LinuxRawSocket {
     fd: RawFd,
-    local_addr: Option<Ipv4Addr>,
 }
 
 impl LinuxRawSocket {
@@ -51,37 +50,7 @@ impl LinuxRawSocket {
 
         Ok(Self {
             fd,
-            local_addr: None,
         })
-    }
-
-    /// 绑定到指定的本地 IP 地址
-    pub fn bind(&mut self, addr: Ipv4Addr) -> Result<(), SocketError> {
-        let sockaddr = libc::sockaddr_in {
-            sin_family: libc::AF_INET as libc::sa_family_t,
-            sin_port: 0,
-            sin_addr: libc::in_addr {
-                s_addr: u32::from_ne_bytes(addr.octets()),
-            },
-            sin_zero: [0; 8],
-        };
-
-        let ret = unsafe {
-            libc::bind(
-                self.fd,
-                &sockaddr as *const _ as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
-            )
-        };
-
-        if ret < 0 {
-            return Err(SocketError::BindFailed {
-                interface: addr.to_string(),
-            });
-        }
-
-        self.local_addr = Some(addr);
-        Ok(())
     }
 
     /// 设置接收超时
@@ -225,7 +194,7 @@ impl PacketReceiver for LinuxRawSocket {
 
 impl RawSocket for LinuxRawSocket {
     fn local_addr(&self) -> Option<Ipv4Addr> {
-        self.local_addr
+        None
     }
 }
 

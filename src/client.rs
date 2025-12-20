@@ -259,10 +259,7 @@ impl VpnClient {
         self.tun = Some(tun.clone());
 
         // Create raw socket
-        let mut socket = LinuxRawSocket::new()?;
-        if self.config.network.bind_addr != Ipv4Addr::new(0, 0, 0, 0) {
-            socket.bind(self.config.network.bind_addr)?;
-        }
+        let socket = LinuxRawSocket::new()?;
         let socket = Arc::new(socket);
         self.socket = Some(socket.clone());
 
@@ -565,7 +562,7 @@ impl VpnClient {
             };
 
             // 验证是 VPN 包（检查端口）
-            if transport.dst_port() != 8443 && transport.src_port() != 8443 {
+            if transport.outer_tcp.dst_port != 8443 && transport.outer_tcp.src_port != 8443 {
                 continue; // Not a VPN packet
             }
 
@@ -855,7 +852,7 @@ mod tests {
         ];
 
         for state in states {
-            assert!(format!("{:?}", state).len() > 0);
+            assert!(!format!("{:?}", state).is_empty());
         }
     }
 

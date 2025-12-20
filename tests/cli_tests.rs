@@ -221,7 +221,7 @@ fn test_cli_server_start_stop() {
 
     // Start server in background
     let mut child = Command::new(BINARY)
-        .args(&["server", "start"])
+        .args(["server", "start"])
         .spawn()
         .expect("Failed to start server");
 

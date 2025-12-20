@@ -129,7 +129,7 @@ heartbeat_timeout_secs = 90
 /// Start server in background and return the child process
 fn start_server_background(config_path: &str) -> Child {
     Command::new(BINARY)
-        .args(&["server", "start", "--config", config_path])
+        .args(["server", "start", "--config", config_path])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -150,6 +150,7 @@ fn wait_for_server_ready(timeout_secs: u64) -> bool {
 }
 
 /// Wait for client to be connected by checking PID file
+#[allow(dead_code)]
 fn wait_for_client_connected(timeout_secs: u64) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < timeout_secs {
@@ -213,7 +214,7 @@ fn test_loopback_client_connects_and_disconnects() {
 
     // Start client in background
     let mut client = Command::new(BINARY)
-        .args(&["client", "connect", "--config", &client_config])
+        .args(["client", "connect", "--config", &client_config])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -233,7 +234,7 @@ fn test_loopback_client_connects_and_disconnects() {
     // in some test environments. The important thing is that the process started.
     if client_running {
         // Disconnect client
-        let (exit_code, _, _) = run_cli(&["client", "disconnect"]);
+        let (_exit_code, _, _) = run_cli(&["client", "disconnect"]);
         // Client disconnect might fail if client already exited
         let _ = client.wait();
     }
@@ -413,7 +414,7 @@ fn test_loopback_full_connection_cycle() {
 
     // Start client
     let mut client = Command::new(BINARY)
-        .args(&["client", "connect", "--config", &client_config])
+        .args(["client", "connect", "--config", &client_config])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

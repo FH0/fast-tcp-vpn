@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_noop_default() {
-        let encryptor = NoopEncryptor::default();
+        let encryptor = NoopEncryptor;
         let plaintext = b"test";
         let ciphertext = encryptor.encrypt(&[], plaintext).unwrap();
         assert_eq!(ciphertext, plaintext);

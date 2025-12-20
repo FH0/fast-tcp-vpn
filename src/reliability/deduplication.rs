@@ -211,7 +211,7 @@ impl SlidingWindowDeduplicator {
     /// * `ttl` - Time-to-live for tracking old packets
     pub fn new(window_size: usize, ttl: Duration) -> Self {
         let window_size = window_size.clamp(64, 65536);
-        let bitmap_size = (window_size + 63) / 64; // Round up to u64 boundaries
+        let bitmap_size = window_size.div_ceil(64); // Round up to u64 boundaries
 
         Self {
             base_seq: 0,

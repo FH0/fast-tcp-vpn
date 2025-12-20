@@ -8,12 +8,7 @@ pub struct TcpFlags(u8);
 impl TcpFlags {
     pub const FIN: TcpFlags = TcpFlags(0x01);
     pub const SYN: TcpFlags = TcpFlags(0x02);
-    pub const RST: TcpFlags = TcpFlags(0x04);
-    pub const PSH: TcpFlags = TcpFlags(0x08);
     pub const ACK: TcpFlags = TcpFlags(0x10);
-    pub const URG: TcpFlags = TcpFlags(0x20);
-    pub const ECE: TcpFlags = TcpFlags(0x40);
-    pub const CWR: TcpFlags = TcpFlags(0x80);
 
     /// 创建空标志
     pub const fn empty() -> Self {
@@ -33,11 +28,6 @@ impl TcpFlags {
     /// 检查是否包含指定标志
     pub const fn contains(&self, other: TcpFlags) -> bool {
         (self.0 & other.0) == other.0
-    }
-
-    /// 检查是否为空
-    pub const fn is_empty(&self) -> bool {
-        self.0 == 0
     }
 }
 
@@ -124,9 +114,7 @@ impl TcpHeader {
         let ack = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
         let data_offset = data[12] >> 4;
         let reserved = (data[12] >> 1) & 0x07;
-        let flags = TcpFlags::from_bits(((data[12] & 0x01) << 7) | (data[13] >> 1));
-        // 实际上 flags 在 data[13] 的低 6 位，加上 data[12] 的最低位作为 NS 标志
-        // 简化处理：flags 在 data[13]
+        // flags 在 data[13]
         let flags = TcpFlags::from_bits(data[13]);
         let window = u16::from_be_bytes([data[14], data[15]]);
         let checksum = u16::from_be_bytes([data[16], data[17]]);

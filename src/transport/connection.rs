@@ -724,7 +724,7 @@ mod tests {
         let server_iss = result.seq.unwrap();
 
         // Receive ACK
-        let result = conn.recv_ack(server_iss + 1).unwrap();
+        let _result = conn.recv_ack(server_iss + 1).unwrap();
 
         assert_eq!(conn.state(), ConnectionState::Established);
     }

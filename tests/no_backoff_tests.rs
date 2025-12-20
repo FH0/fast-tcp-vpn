@@ -37,7 +37,7 @@ impl LossyChannel {
         let should_lose = if self.loss_rate > 0.0 {
             let period = (1.0 / self.loss_rate) as u64;
             if period > 0 {
-                self.packets_sent % period == 0
+                self.packets_sent.is_multiple_of(period)
             } else {
                 true
             }
@@ -306,7 +306,7 @@ fn stress_test_high_volume_30_percent_loss() {
         }
 
         // Cleanup periodically
-        if packets_attempted % 100 == 0 {
+        if packets_attempted.is_multiple_of(100) {
             window.cleanup_acked();
         }
 

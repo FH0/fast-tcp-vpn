@@ -7,8 +7,10 @@ use std::fmt;
 
 /// TCP connection states as defined in RFC 793
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum ConnectionState {
     /// No connection state at all
+    #[default]
     Closed,
     /// Waiting for a matching connection request after having sent a connection request
     SynSent,
@@ -36,11 +38,6 @@ pub enum ConnectionState {
     Listen,
 }
 
-impl Default for ConnectionState {
-    fn default() -> Self {
-        ConnectionState::Closed
-    }
-}
 
 impl fmt::Display for ConnectionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

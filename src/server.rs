@@ -264,10 +264,7 @@ impl VpnServer {
         self.tun = Some(tun.clone());
 
         // Create raw socket
-        let mut socket = LinuxRawSocket::new()?;
-        if self.config.network.bind_addr != Ipv4Addr::new(0, 0, 0, 0) {
-            socket.bind(self.config.network.bind_addr)?;
-        }
+        let socket = LinuxRawSocket::new()?;
         let socket = Arc::new(socket);
         self.socket = Some(socket.clone());
 
@@ -470,7 +467,7 @@ impl VpnServer {
             };
 
             // 提取目标 IP（用于路由）
-            let dst_ip = ip_packet.dst_ip();
+            let dst_ip = ip_packet.ip_header.dst_ip;
 
             // Find session for this destination
             let tunnel_guard = tunnel.read().unwrap();
@@ -590,12 +587,12 @@ impl VpnServer {
             };
 
             // 验证是 VPN 包（检查端口）
-            if transport.dst_port() != 8443 {
+            if transport.outer_tcp.dst_port != 8443 {
                 continue; // Not a VPN packet
             }
 
             // 提取源 IP（用于日志或未来扩展）
-            let _src_ip = transport.src_ip();
+            let _src_ip = transport.outer_ip.src_ip;
 
             // 如果 payload 为空，跳过
             if transport.encrypted_payload.is_empty() {

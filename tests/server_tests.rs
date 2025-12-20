@@ -119,7 +119,8 @@ fn test_server_uptime() {
 
     let stats = server.stats();
     // Uptime should be at least 0 (might be 0 if less than 1 second)
-    assert!(stats.uptime_secs >= 0);
+    // uptime_secs is u64, always >= 0
+    let _ = stats.uptime_secs;
 
     server.stop().unwrap();
 }

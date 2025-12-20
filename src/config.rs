@@ -955,68 +955,87 @@ psk = "{}"
 
     #[test]
     fn test_network_config_validate_mtu_too_small() {
-        let mut config = NetworkConfig::default();
-        config.mtu = 100;
+        let config = NetworkConfig {
+            mtu: 100,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_network_config_validate_mtu_too_large() {
-        let mut config = NetworkConfig::default();
-        config.mtu = 10000;
+        let config = NetworkConfig {
+            mtu: 10000,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_tunnel_config_validate_empty_name() {
-        let mut config = TunnelInterfaceConfig::default();
-        config.name = String::new();
+        let config = TunnelInterfaceConfig {
+            name: String::new(),
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_tunnel_config_validate_name_too_long() {
-        let mut config = TunnelInterfaceConfig::default();
-        config.name = "a".repeat(20);
+        let config = TunnelInterfaceConfig {
+            name: "a".repeat(20),
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_tunnel_config_validate_invalid_prefix() {
-        let mut config = TunnelInterfaceConfig::default();
-        config.prefix_len = 33;
+        let config = TunnelInterfaceConfig {
+            prefix_len: 33,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_reliability_config_validate_invalid_multiplier() {
-        let mut config = ReliabilityConfig::default();
-        config.redundancy_multiplier = 0;
+        let config = ReliabilityConfig {
+            redundancy_multiplier: 0,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
 
-        config.redundancy_multiplier = 11;
+        let config = ReliabilityConfig {
+            redundancy_multiplier: 11,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_reliability_config_validate_invalid_pps() {
-        let mut config = ReliabilityConfig::default();
-        config.packets_per_second = 50;
+        let config = ReliabilityConfig {
+            packets_per_second: 50,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_session_config_validate_invalid_heartbeat() {
-        let mut config = SessionConfigParams::default();
-        config.heartbeat_interval_secs = 0;
+        let config = SessionConfigParams {
+            heartbeat_interval_secs: 0,
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
@@ -1030,24 +1049,30 @@ psk = "{}"
 
     #[test]
     fn test_security_config_validate_short_psk() {
-        let mut config = SecurityConfig::default();
-        config.psk = "0123456789abcdef".to_string(); // Only 16 chars
+        let config = SecurityConfig {
+            psk: "0123456789abcdef".to_string(), // Only 16 chars
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_security_config_validate_invalid_hex_psk() {
-        let mut config = SecurityConfig::default();
-        config.psk = "ghijklmnopqrstuv0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+        let config = SecurityConfig {
+            psk: "ghijklmnopqrstuv0123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            ..Default::default()
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
 
     #[test]
     fn test_security_config_decode_psk() {
-        let mut config = SecurityConfig::default();
-        config.psk = TEST_PSK.to_string();
+        let config = SecurityConfig {
+            psk: TEST_PSK.to_string(),
+            ..Default::default()
+        };
 
         let key = config.decode_psk().unwrap();
         assert_eq!(key.len(), 32);
@@ -1058,9 +1083,10 @@ psk = "{}"
 
     #[test]
     fn test_ip_pool_config_validate_invalid_range() {
-        let mut config = IpPoolConfig::default();
-        config.start = Ipv4Addr::new(10, 0, 0, 100);
-        config.end = Ipv4Addr::new(10, 0, 0, 50);
+        let config = IpPoolConfig {
+            start: Ipv4Addr::new(10, 0, 0, 100),
+            end: Ipv4Addr::new(10, 0, 0, 50),
+        };
         let result = config.validate();
         assert!(matches!(result, Err(ConfigError::ValidationError(_))));
     }
