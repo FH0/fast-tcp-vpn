@@ -7,16 +7,17 @@
 //!   客户端: sudo ./speed_test client <server_ip> [port] [duration_secs] [packet_size]
 
 use fast_tcp_vpn::infrastructure::crypto::{ChaCha20Poly1305, KEY_LEN};
-use fast_tcp_vpn::infrastructure::packet::TransportPacket;
+use fast_tcp_vpn::infrastructure::packet::{TcpFlags, TransportPacket};
 use fast_tcp_vpn::infrastructure::socket::{
     get_outbound_ip, LinuxRawSocket, PacketReceiver, PacketSender, SocketError,
 };
 use fast_tcp_vpn::tunnel::Encapsulator;
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_PORT: u16 = 9000;
 const DEFAULT_DURATION_SECS: u64 = 10;
@@ -27,6 +28,23 @@ const TEST_PSK: [u8; KEY_LEN] = [
     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
 ];
+
+fn seed_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_nanos() as u64
+}
+
+fn choose_ephemeral_port() -> u16 {
+    let s = seed_u64();
+    let p = (s % 16384) as u16;
+    49152u16.saturating_add(p)
+}
+
+fn choose_initial_seq() -> u32 {
+    (seed_u64() & 0xffff_ffff) as u32
+}
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -72,7 +90,7 @@ fn run_server(args: &[String]) {
     println!();
 
     // 创建 raw socket
-    let socket = match LinuxRawSocket::new() {
+    let socket = match LinuxRawSocket::new_server(port) {
         Ok(s) => {
             println!("[OK] Raw socket 创建成功");
             s
@@ -103,6 +121,15 @@ fn run_server(args: &[String]) {
     println!("[INFO] 监听端口 {}...", port);
     println!("[INFO] Echo Server 模式: 接收数据并回显...");
     println!();
+
+    #[derive(Debug, Clone, Copy)]
+    struct Conn {
+        client_next_seq: u32,
+        server_next_seq: u32,
+        established: bool,
+    }
+
+    let mut conns: HashMap<(Ipv4Addr, u16), Conn> = HashMap::new();
 
     let stats = Arc::new(ServerStats::new());
     let running = Arc::new(AtomicBool::new(true));
@@ -144,13 +171,63 @@ fn run_server(args: &[String]) {
                 };
 
                 // 验证端口
-                if transport.outer_tcp.dst_port != port && transport.outer_tcp.src_port != port {
+                if transport.outer_tcp.dst_port != port {
+                    continue;
+                }
+
+                let key = (transport.outer_ip.src_ip, transport.outer_tcp.src_port);
+
+                if transport.outer_tcp.flags.contains(TcpFlags::SYN)
+                    && !transport.outer_tcp.flags.contains(TcpFlags::ACK)
+                {
+                    let client_isn = transport.outer_tcp.seq;
+                    let server_isn = 2000u32;
+
+                    let mut syn_ack = TransportPacket::new(
+                        transport.outer_ip.dst_ip,
+                        transport.outer_ip.src_ip,
+                        port,
+                        transport.outer_tcp.src_port,
+                        Vec::new(),
+                    );
+                    syn_ack.outer_tcp.flags = TcpFlags::SYN | TcpFlags::ACK;
+                    syn_ack.outer_tcp.seq = server_isn;
+                    syn_ack.outer_tcp.ack = client_isn.wrapping_add(1);
+
+                    let syn_ack_bytes = syn_ack.to_bytes();
+                    let _ = socket.send_raw(&syn_ack_bytes, transport.outer_ip.src_ip);
+
+                    conns.insert(
+                        key,
+                        Conn {
+                            client_next_seq: client_isn.wrapping_add(1),
+                            server_next_seq: server_isn.wrapping_add(1),
+                            established: false,
+                        },
+                    );
+                    continue;
+                }
+
+                if transport.outer_tcp.flags.contains(TcpFlags::ACK)
+                    && transport.encrypted_payload.is_empty()
+                {
+                    if let Some(conn) = conns.get_mut(&key) {
+                        if !conn.established && transport.outer_tcp.ack == conn.server_next_seq {
+                            conn.established = true;
+                            conn.client_next_seq = transport.outer_tcp.seq;
+                        }
+                    }
                     continue;
                 }
 
                 if transport.encrypted_payload.is_empty() {
                     continue;
                 }
+
+                let conn = match conns.get_mut(&key) {
+                    Some(c) if c.established => c,
+                    _ => continue,
+                };
 
                 // 解密
                 let decrypted = match encapsulator.decapsulate(&transport.encrypted_payload) {
@@ -169,6 +246,8 @@ fn run_server(args: &[String]) {
                 // 记录接收统计
                 stats.record_packet(len, decrypted.len());
 
+                conn.client_next_seq = transport.outer_tcp.seq.wrapping_add(transport.encrypted_payload.len() as u32);
+
                 // 回显: 重新加密并发送回客户端
                 let echo_encrypted = match encapsulator.encapsulate(&decrypted) {
                     Ok(data) => data,
@@ -179,12 +258,19 @@ fn run_server(args: &[String]) {
                 let echo_transport = TransportPacket::new(
                     transport.outer_ip.dst_ip,
                     transport.outer_ip.src_ip,
-                    transport.outer_tcp.dst_port,
+                    port,
                     transport.outer_tcp.src_port,
                     echo_encrypted,
                 );
 
+                let mut echo_transport = echo_transport;
+                echo_transport.outer_tcp.flags = TcpFlags::ACK;
+                echo_transport.outer_tcp.seq = conn.server_next_seq;
+                echo_transport.outer_tcp.ack = conn.client_next_seq;
+
                 let echo_bytes = echo_transport.to_bytes();
+
+                conn.server_next_seq = conn.server_next_seq.wrapping_add(echo_transport.encrypted_payload.len() as u32);
 
                 // 发送回显
                 if let Err(e) = socket.send_raw(&echo_bytes, transport.outer_ip.src_ip) {
@@ -295,6 +381,81 @@ fn run_client(args: &[String]) {
         }
     });
 
+    let local_port: u16 = choose_ephemeral_port();
+    let _rst_rule = RstDropRule::try_new(local_port);
+
+    let mut client_next_seq: u32 = choose_initial_seq();
+    let mut server_next_seq: u32;
+
+    // 三次握手
+    {
+        let mut syn = TransportPacket::new(local_ip, server_ip, local_port, port, Vec::new());
+        syn.outer_tcp.flags = TcpFlags::SYN;
+        syn.outer_tcp.seq = client_next_seq;
+
+        let syn_bytes = syn.to_bytes();
+        if let Err(e) = socket.send_raw(&syn_bytes, server_ip) {
+            eprintln!("[ERROR] 发送失败: {:?}", e);
+            return;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut buffer = [0u8; 65535];
+        let mut syn_ack: Option<TransportPacket> = None;
+
+        while Instant::now() < deadline {
+            match socket.receive_raw(&mut buffer, Some(Duration::from_millis(50))) {
+                Ok(len) => {
+                    if len < 40 {
+                        continue;
+                    }
+                    let t = match TransportPacket::parse(&buffer[..len]) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    };
+
+                    if t.outer_ip.src_ip != server_ip {
+                        continue;
+                    }
+                    if t.outer_tcp.dst_port != local_port {
+                        continue;
+                    }
+                    if t.outer_tcp.src_port != port {
+                        continue;
+                    }
+                    if !t.outer_tcp.flags.contains(TcpFlags::SYN) || !t.outer_tcp.flags.contains(TcpFlags::ACK) {
+                        continue;
+                    }
+                    if t.outer_tcp.ack != client_next_seq.wrapping_add(1) {
+                        continue;
+                    }
+                    syn_ack = Some(t);
+                    break;
+                }
+                Err(SocketError::Timeout) => continue,
+                Err(_) => break,
+            }
+        }
+
+        let syn_ack = match syn_ack {
+            Some(p) => p,
+            None => {
+                eprintln!("[ERROR] Handshake failed: no SYN-ACK");
+                return;
+            }
+        };
+
+        server_next_seq = syn_ack.outer_tcp.seq.wrapping_add(1);
+        client_next_seq = client_next_seq.wrapping_add(1);
+
+        let mut ack = TransportPacket::new(local_ip, server_ip, local_port, port, Vec::new());
+        ack.outer_tcp.flags = TcpFlags::ACK;
+        ack.outer_tcp.seq = client_next_seq;
+        ack.outer_tcp.ack = server_next_seq;
+        let ack_bytes = ack.to_bytes();
+        let _ = socket.send_raw(&ack_bytes, server_ip);
+    }
+
     // 生成测试数据（模拟 IP 包）
     let mut test_payload = vec![0u8; packet_size];
     // 构造一个简单的 IP 头
@@ -332,13 +493,10 @@ fn run_client(args: &[String]) {
             }
         };
 
-        let transport = TransportPacket::new(
-            local_ip,
-            server_ip,
-            port,
-            port,
-            encrypted,
-        );
+        let mut transport = TransportPacket::new(local_ip, server_ip, local_port, port, encrypted);
+        transport.outer_tcp.flags = TcpFlags::ACK;
+        transport.outer_tcp.seq = client_next_seq;
+        transport.outer_tcp.ack = server_next_seq;
 
         let packet_bytes = transport.to_bytes();
         let send_time = Instant::now();
@@ -348,6 +506,8 @@ fn run_client(args: &[String]) {
             stats.record_error();
             continue;
         }
+
+        client_next_seq = client_next_seq.wrapping_add(transport.encrypted_payload.len() as u32);
 
         // 2. 等待回显响应 (超时 1 秒)
         let timeout = Duration::from_secs(1);
@@ -368,8 +528,10 @@ fn run_client(args: &[String]) {
                     };
 
                     // 验证是否是我们的回显包
-                    if echo_transport.outer_ip.src_ip != server_ip ||
-                       echo_transport.outer_tcp.src_port != port {
+                    if echo_transport.outer_ip.src_ip != server_ip
+                        || echo_transport.outer_tcp.src_port != port
+                        || echo_transport.outer_tcp.dst_port != local_port
+                    {
                         continue;
                     }
 
@@ -381,6 +543,11 @@ fn run_client(args: &[String]) {
                     match encapsulator.decapsulate(&echo_transport.encrypted_payload) {
                         Ok(decrypted) => {
                             if decrypted.len() >= 20 && (decrypted[0] >> 4) == 4 {
+                                server_next_seq = echo_transport
+                                    .outer_tcp
+                                    .seq
+                                    .wrapping_add(echo_transport.encrypted_payload.len() as u32);
+
                                 // 成功接收回显
                                 let rtt = send_time.elapsed();
                                 stats.record_round_trip(packet_bytes.len(), test_payload.len(), rtt);
@@ -409,6 +576,77 @@ fn run_client(args: &[String]) {
 
     println!();
     stats.print_final(start_time.elapsed());
+}
+
+struct RstDropRule {
+    port: u16,
+    installed: bool,
+}
+
+impl RstDropRule {
+    fn try_new(port: u16) -> Self {
+        let output = std::process::Command::new("iptables")
+            .args([
+                "-A",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "--sport",
+                &port.to_string(),
+                "--tcp-flags",
+                "RST",
+                "RST",
+                "-j",
+                "DROP",
+            ])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => Self {
+                port,
+                installed: true,
+            },
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                eprintln!("[WARN] Failed to add iptables RST drop rule: {}", stderr);
+                Self {
+                    port,
+                    installed: false,
+                }
+            }
+            Err(e) => {
+                eprintln!("[WARN] Failed to add iptables RST drop rule: {}", e);
+                Self {
+                    port,
+                    installed: false,
+                }
+            }
+        }
+    }
+}
+
+impl Drop for RstDropRule {
+    fn drop(&mut self) {
+        if !self.installed {
+            return;
+        }
+
+        let _ = std::process::Command::new("iptables")
+            .args([
+                "-D",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "--sport",
+                &self.port.to_string(),
+                "--tcp-flags",
+                "RST",
+                "RST",
+                "-j",
+                "DROP",
+            ])
+            .output();
+    }
 }
 
 // ============================================================================
