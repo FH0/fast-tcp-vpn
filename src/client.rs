@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::ClientConfig;
 use crate::infrastructure::crypto::KEY_LEN;
+use crate::infrastructure::packet::Packet;
 use crate::infrastructure::socket::{LinuxRawSocket, PacketReceiver, PacketSender, SocketError};
 use crate::infrastructure::tun::{LinuxTun, TunConfig, TunDevice, TunError};
 use crate::tunnel::{Session, SessionError, SessionId, SessionState};
@@ -433,7 +434,7 @@ impl VpnClient {
         Ok(())
     }
 
-    /// Worker: Read from TUN, encrypt, send via socket
+    /// Worker: Read from TUN, encrypt payload only, send via socket
     fn tun_to_socket_worker(
         tun: Arc<LinuxTun>,
         socket: Arc<LinuxRawSocket>,
@@ -459,25 +460,42 @@ impl VpnClient {
                 continue; // Too short for IP header
             }
 
-            // Encrypt the packet
-            let encrypted = {
-                let mut session_guard = session.write().unwrap();
-                match session_guard.as_mut() {
-                    Some(s) if s.state() == SessionState::Established => {
-                        match s.encrypt(&buffer[..len]) {
-                            Ok(data) => data,
-                            Err(e) => {
-                                eprintln!("Encryption error: {}", e);
-                                continue;
-                            }
-                        }
-                    }
-                    _ => continue,
-                }
+            // Parse the packet to extract payload
+            let mut packet = match Packet::parse(&buffer[..len]) {
+                Ok(p) => p,
+                Err(_) => continue, // Not a valid TCP packet
             };
 
+            // Only encrypt the payload, keep IP/TCP headers intact
+            if !packet.payload.is_empty() {
+                let encrypted_payload = {
+                    let mut session_guard = session.write().unwrap();
+                    match session_guard.as_mut() {
+                        Some(s) if s.state() == SessionState::Established => {
+                            match s.encrypt(&packet.payload) {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    eprintln!("Encryption error: {}", e);
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => continue,
+                    }
+                };
+                packet.payload = encrypted_payload;
+            }
+
+            // Update destination IP to server and rebuild packet
+            packet.ip_header.dst_ip = server_ip;
+            // Update total length
+            let new_total_len = 20 + packet.tcp_header.header_len() + packet.payload.len();
+            packet.ip_header.total_length = new_total_len as u16;
+
+            let packet_bytes = packet.to_bytes();
+
             // Send via raw socket to server
-            if let Err(e) = socket.send_raw(&encrypted, server_ip) {
+            if let Err(e) = socket.send_raw(&packet_bytes, server_ip) {
                 eprintln!("Socket send error: {}", e);
                 continue;
             }
@@ -485,13 +503,13 @@ impl VpnClient {
             // Update stats
             {
                 let mut stats = stats.write().unwrap();
-                stats.bytes_sent += encrypted.len() as u64;
+                stats.bytes_sent += packet_bytes.len() as u64;
                 stats.packets_sent += 1;
             }
         }
     }
 
-    /// Worker: Receive from socket, decrypt, write to TUN
+    /// Worker: Receive from socket, decrypt payload only, write to TUN
     fn socket_to_tun_worker(
         socket: Arc<LinuxRawSocket>,
         tun: Arc<LinuxTun>,
@@ -516,25 +534,40 @@ impl VpnClient {
                 continue; // Too short for IP header
             }
 
-            // Decrypt the packet
-            let decrypted = {
-                let mut session_guard = session.write().unwrap();
-                match session_guard.as_mut() {
-                    Some(s) if s.state() == SessionState::Established => {
-                        match s.decrypt(&buffer[..len]) {
-                            Ok(data) => data,
-                            Err(e) => {
-                                eprintln!("Decryption error: {}", e);
-                                continue;
-                            }
-                        }
-                    }
-                    _ => continue,
-                }
+            // Parse the packet
+            let mut packet = match Packet::parse(&buffer[..len]) {
+                Ok(p) => p,
+                Err(_) => continue, // Not a valid TCP packet, skip
             };
 
+            // Only decrypt the payload if it's not empty
+            if !packet.payload.is_empty() {
+                let decrypted_payload = {
+                    let mut session_guard = session.write().unwrap();
+                    match session_guard.as_mut() {
+                        Some(s) if s.state() == SessionState::Established => {
+                            match s.decrypt(&packet.payload) {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    eprintln!("Decryption error: {}", e);
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => continue,
+                    }
+                };
+                packet.payload = decrypted_payload;
+            }
+
+            // Update total length and rebuild packet
+            let new_total_len = 20 + packet.tcp_header.header_len() + packet.payload.len();
+            packet.ip_header.total_length = new_total_len as u16;
+
+            let packet_bytes = packet.to_bytes();
+
             // Write to TUN
-            if let Err(e) = tun.write(&decrypted) {
+            if let Err(e) = tun.write(&packet_bytes) {
                 eprintln!("TUN write error: {}", e);
                 continue;
             }

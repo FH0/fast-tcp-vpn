@@ -14,6 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::config::ServerConfig;
+use crate::infrastructure::packet::Packet;
 use crate::infrastructure::socket::{LinuxRawSocket, PacketReceiver, PacketSender, SocketError};
 use crate::infrastructure::tun::{LinuxTun, TunConfig, TunDevice, TunError};
 use crate::tunnel::{
@@ -417,7 +418,7 @@ impl VpnServer {
         Ok(())
     }
 
-    /// Worker: Read from TUN, encrypt, send via socket
+    /// Worker: Read from TUN, encrypt payload only, send via socket
     fn tun_to_socket_worker(
         tun: Arc<LinuxTun>,
         socket: Arc<LinuxRawSocket>,
@@ -444,8 +445,14 @@ impl VpnServer {
                 continue; // Too short for IP header
             }
 
-            // Extract destination IP from IP header
-            let dst_ip = Ipv4Addr::new(buffer[16], buffer[17], buffer[18], buffer[19]);
+            // Parse the packet to extract payload
+            let mut packet = match Packet::parse(&buffer[..len]) {
+                Ok(p) => p,
+                Err(_) => continue, // Not a valid TCP packet
+            };
+
+            // Extract destination IP from packet
+            let dst_ip = packet.ip_header.dst_ip;
 
             // Find session for this destination
             let tunnel_guard = tunnel.read().unwrap();
@@ -462,24 +469,33 @@ impl VpnServer {
             let session_id = session.id();
             drop(tunnel_guard);
 
-            // Encrypt the packet
-            let mut tunnel_guard = tunnel.write().unwrap();
-            let tunnel_ref = match tunnel_guard.as_mut() {
-                Some(t) => t,
-                None => continue,
-            };
+            // Only encrypt the payload, keep IP/TCP headers intact
+            if !packet.payload.is_empty() {
+                let mut tunnel_guard = tunnel.write().unwrap();
+                let tunnel_ref = match tunnel_guard.as_mut() {
+                    Some(t) => t,
+                    None => continue,
+                };
 
-            let encrypted = match tunnel_ref.encrypt(session_id, &buffer[..len]) {
-                Ok(data) => data,
-                Err(e) => {
-                    eprintln!("Encryption error: {}", e);
-                    continue;
-                }
-            };
-            drop(tunnel_guard);
+                let encrypted_payload = match tunnel_ref.encrypt(session_id, &packet.payload) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        eprintln!("Encryption error: {}", e);
+                        continue;
+                    }
+                };
+                drop(tunnel_guard);
+                packet.payload = encrypted_payload;
+            }
+
+            // Update total length and rebuild packet
+            let new_total_len = 20 + packet.tcp_header.header_len() + packet.payload.len();
+            packet.ip_header.total_length = new_total_len as u16;
+
+            let packet_bytes = packet.to_bytes();
 
             // Send via raw socket
-            if let Err(e) = socket.send_raw(&encrypted, dst_ip) {
+            if let Err(e) = socket.send_raw(&packet_bytes, dst_ip) {
                 eprintln!("Socket send error: {}", e);
                 continue;
             }
@@ -487,7 +503,7 @@ impl VpnServer {
             // Update stats
             {
                 let mut stats = stats.write().unwrap();
-                stats.bytes_sent += encrypted.len() as u64;
+                stats.bytes_sent += packet_bytes.len() as u64;
                 stats.packets_sent += 1;
             }
 
@@ -495,14 +511,14 @@ impl VpnServer {
             {
                 let mut clients = clients.write().unwrap();
                 if let Some(client) = clients.get_mut(&session_id.raw()) {
-                    client.bytes_sent += encrypted.len() as u64;
+                    client.bytes_sent += packet_bytes.len() as u64;
                     client.last_activity = Instant::now();
                 }
             }
         }
     }
 
-    /// Worker: Receive from socket, decrypt, write to TUN
+    /// Worker: Receive from socket, decrypt payload only, write to TUN
     fn socket_to_tun_worker(
         socket: Arc<LinuxRawSocket>,
         tun: Arc<LinuxTun>,
@@ -530,8 +546,14 @@ impl VpnServer {
                 continue; // Too short for IP header
             }
 
-            // Extract source IP from IP header
-            let src_ip = Ipv4Addr::new(buffer[12], buffer[13], buffer[14], buffer[15]);
+            // Parse the packet
+            let mut packet = match Packet::parse(&buffer[..len]) {
+                Ok(p) => p,
+                Err(_) => continue, // Not a valid TCP packet, skip
+            };
+
+            // Extract source IP from packet
+            let src_ip = packet.ip_header.src_ip;
 
             // Check if this is from a known client
             let tunnel_guard = tunnel.read().unwrap();
@@ -591,24 +613,33 @@ impl VpnServer {
                 }
             };
 
-            // Decrypt the packet
-            let mut tunnel_guard = tunnel.write().unwrap();
-            let tunnel_ref = match tunnel_guard.as_mut() {
-                Some(t) => t,
-                None => continue,
-            };
+            // Only decrypt the payload if it's not empty
+            if !packet.payload.is_empty() {
+                let mut tunnel_guard = tunnel.write().unwrap();
+                let tunnel_ref = match tunnel_guard.as_mut() {
+                    Some(t) => t,
+                    None => continue,
+                };
 
-            let decrypted = match tunnel_ref.decrypt(session_id, &buffer[..len]) {
-                Ok(data) => data,
-                Err(e) => {
-                    eprintln!("Decryption error: {}", e);
-                    continue;
-                }
-            };
-            drop(tunnel_guard);
+                let decrypted_payload = match tunnel_ref.decrypt(session_id, &packet.payload) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        eprintln!("Decryption error: {}", e);
+                        continue;
+                    }
+                };
+                drop(tunnel_guard);
+                packet.payload = decrypted_payload;
+            }
+
+            // Update total length and rebuild packet
+            let new_total_len = 20 + packet.tcp_header.header_len() + packet.payload.len();
+            packet.ip_header.total_length = new_total_len as u16;
+
+            let packet_bytes = packet.to_bytes();
 
             // Write to TUN
-            if let Err(e) = tun.write(&decrypted) {
+            if let Err(e) = tun.write(&packet_bytes) {
                 eprintln!("TUN write error: {}", e);
                 continue;
             }
