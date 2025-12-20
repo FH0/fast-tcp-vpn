@@ -4,7 +4,7 @@ pub mod session;
 pub mod tunnel;
 pub mod virtual_ip;
 
-pub use encapsulation::{EncapsulatedData, EncapsulationError, EncapsulationHeader};
+pub use encapsulation::{EncapsulatedData, EncapsulationError, EncapsulationHeader, Encapsulator};
 pub use routing::{Route, RoutingError, RoutingTable};
 pub use session::{
     Session, SessionConfig, SessionError, SessionId, SessionState, SessionStats,
