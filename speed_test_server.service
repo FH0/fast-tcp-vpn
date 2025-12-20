@@ -1,0 +1,18 @@
+[Unit]
+Description=Fast-TCP-VPN Speed Test Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/speed_test server 9000 3600
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security settings
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

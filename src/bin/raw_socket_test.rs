@@ -1,19 +1,21 @@
-//! Raw Socket 物理层测试
+//! 完整的 TCP 流程测试
 //!
-//! 测试 raw socket 在客户端和服务端之间的双向通信能力。
+//! 实现完整的 TCP 三次握手、双向数据传输和四次挥手。
 //!
 //! 用法:
 //!   服务端: sudo ./raw_socket_test server [port]
-//!   客户端: sudo ./raw_socket_test client <server_ip> [port] [count]
+//!   客户端: sudo ./raw_socket_test client <server_ip> [port]
 
 use fast_tcp_vpn::infrastructure::packet::{Packet, TcpFlags};
 use fast_tcp_vpn::infrastructure::socket::{
     get_outbound_ip, LinuxRawSocket, PacketReceiver, PacketSender, SocketError,
 };
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 const DEFAULT_PORT: u16 = 54321;
+const TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -27,15 +29,15 @@ fn main() {
 }
 
 fn print_usage(prog: &str) {
-    println!("Raw Socket 物理层测试");
+    println!("完整的 TCP 流程测试");
     println!();
     println!("用法:");
-    println!("  {} server [port]                      - 启动服务端", prog);
-    println!("  {} client <server_ip> [port] [count]  - 启动客户端", prog);
+    println!("  {} server [port]            - 启动服务端", prog);
+    println!("  {} client <server_ip> [port] - 启动客户端", prog);
     println!();
     println!("示例:");
     println!("  {} server 54321", prog);
-    println!("  {} client 38.175.192.236 54321 10", prog);
+    println!("  {} client 38.175.192.236 54321", prog);
     println!();
     println!("注意: 需要 root 权限运行");
 }
@@ -44,14 +46,33 @@ fn print_usage(prog: &str) {
 // 服务端
 // ============================================================================
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ServerState {
+    Listen,
+    SynReceived,
+    Established,
+    FinWait,
+    Closed,
+}
+
+#[allow(dead_code)]
+struct ServerConnection {
+    state: ServerState,
+    client_ip: Ipv4Addr,
+    client_port: u16,
+    server_seq: u32,
+    client_seq: u32,
+    last_activity: Instant,
+}
+
 fn run_server(args: &[String]) {
     let port: u16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_PORT);
 
-    println!("=== Raw Socket 服务端 ===");
+    println!("=== TCP 服务端 ===");
     println!("端口: {}", port);
     println!();
 
-    // 创建 raw socket
     let socket = match LinuxRawSocket::new() {
         Ok(s) => {
             println!("[OK] Raw socket 创建成功");
@@ -70,67 +91,223 @@ fn run_server(args: &[String]) {
     println!("[INFO] 监听端口 {}...", port);
     println!();
 
-    let mut stats = Stats::new();
+    let mut connections: HashMap<(Ipv4Addr, u16), ServerConnection> = HashMap::new();
 
     loop {
-        match socket.receive(Some(Duration::from_secs(1))) {
+        match socket.receive(Some(Duration::from_millis(100))) {
             Ok(packet) => {
                 if packet.tcp_header.dst_port != port {
                     continue;
                 }
 
-                // 只处理 SYN 包
-                if !packet.tcp_header.flags.contains(TcpFlags::SYN) {
+                let key = (packet.ip_header.src_ip, packet.tcp_header.src_port);
+                let conn = connections.get_mut(&key);
+
+                // 处理 SYN - 三次握手第一步
+                if packet.tcp_header.flags.contains(TcpFlags::SYN)
+                    && !packet.tcp_header.flags.contains(TcpFlags::ACK) {
+
+                    println!(
+                        "[1/6] 收到 SYN from {}:{} seq={}",
+                        packet.ip_header.src_ip,
+                        packet.tcp_header.src_port,
+                        packet.tcp_header.seq
+                    );
+
+                    let server_seq = 2000u32;
+                    let client_seq = packet.tcp_header.seq;
+
+                    // 发送 SYN+ACK - 三次握手第二步
+                    let mut reply = Packet::new(
+                        packet.ip_header.dst_ip,
+                        packet.ip_header.src_ip,
+                        packet.tcp_header.dst_port,
+                        packet.tcp_header.src_port,
+                        Vec::new(),
+                    );
+                    reply.tcp_header.flags = TcpFlags::SYN | TcpFlags::ACK;
+                    reply.tcp_header.seq = server_seq;
+                    reply.tcp_header.ack = client_seq.wrapping_add(1);
+                    reply.tcp_header.window = 65535;
+
+                    if socket.send(&reply).is_ok() {
+                        println!(
+                            "[2/6] 发送 SYN+ACK to {}:{} seq={} ack={}",
+                            reply.ip_header.dst_ip,
+                            reply.tcp_header.dst_port,
+                            server_seq,
+                            reply.tcp_header.ack
+                        );
+
+                        connections.insert(
+                            key,
+                            ServerConnection {
+                                state: ServerState::SynReceived,
+                                client_ip: packet.ip_header.src_ip,
+                                client_port: packet.tcp_header.src_port,
+                                server_seq: server_seq.wrapping_add(1),
+                                client_seq: client_seq.wrapping_add(1),
+                                last_activity: Instant::now(),
+                            },
+                        );
+                    }
                     continue;
                 }
 
-                stats.packets_received += 1;
-                stats.bytes_received += 40;
-
-                let seq_num = packet.tcp_header.seq;
-
-                println!(
-                    "[RECV #{}] {}:{} -> seq={}",
-                    stats.packets_received,
-                    packet.ip_header.src_ip,
-                    packet.tcp_header.src_port,
-                    seq_num
-                );
-
-                // 发送 SYN+ACK 回复
-                let mut reply = Packet::new(
-                    packet.ip_header.dst_ip,
-                    packet.ip_header.src_ip,
-                    packet.tcp_header.dst_port,
-                    packet.tcp_header.src_port,
-                    Vec::new(),
-                );
-                reply.tcp_header.flags = TcpFlags::SYN | TcpFlags::ACK;
-                reply.tcp_header.seq = 1000;
-                reply.tcp_header.ack = seq_num.wrapping_add(1);
-                reply.tcp_header.window = 65535;
-
-                match socket.send(&reply) {
-                    Ok(n) => {
-                        stats.packets_sent += 1;
-                        stats.bytes_sent += n as u64;
+                // 处理 ACK - 三次握手第三步
+                if let Some(conn) = conn {
+                    if conn.state == ServerState::SynReceived
+                        && packet.tcp_header.flags.contains(TcpFlags::ACK)
+                        && !packet.tcp_header.flags.contains(TcpFlags::SYN)
+                        && packet.tcp_header.ack == conn.server_seq
+                    {
                         println!(
-                            "[SEND] -> {}:{} ack={}",
-                            reply.ip_header.dst_ip,
-                            reply.tcp_header.dst_port,
-                            reply.tcp_header.ack
+                            "[3/6] 收到 ACK from {}:{} - 连接建立",
+                            packet.ip_header.src_ip, packet.tcp_header.src_port
                         );
+                        conn.state = ServerState::Established;
+                        conn.last_activity = Instant::now();
+                        continue;
                     }
-                    Err(e) => {
-                        eprintln!("[ERROR] 发送失败: {:?}", e);
-                    }
-                }
 
-                if stats.packets_received % 10 == 0 {
-                    stats.print();
+                    // 处理数据包
+                    if conn.state == ServerState::Established
+                        && packet.tcp_header.flags.contains(TcpFlags::ACK)
+                        && !packet.payload.is_empty()
+                    {
+                        let data = String::from_utf8_lossy(&packet.payload);
+                        println!(
+                            "[4/6] 收到数据 from {}:{} len={} data=\"{}\"",
+                            packet.ip_header.src_ip,
+                            packet.tcp_header.src_port,
+                            packet.payload.len(),
+                            data
+                        );
+
+                        conn.client_seq = packet.tcp_header.seq.wrapping_add(packet.payload.len() as u32);
+
+                        // 发送 ACK
+                        let mut ack_reply = Packet::new(
+                            packet.ip_header.dst_ip,
+                            packet.ip_header.src_ip,
+                            packet.tcp_header.dst_port,
+                            packet.tcp_header.src_port,
+                            Vec::new(),
+                        );
+                        ack_reply.tcp_header.flags = TcpFlags::ACK;
+                        ack_reply.tcp_header.seq = conn.server_seq;
+                        ack_reply.tcp_header.ack = conn.client_seq;
+                        ack_reply.tcp_header.window = 65535;
+
+                        let _ = socket.send(&ack_reply);
+
+                        // 发送响应数据
+                        let response = b"Hello from server!";
+                        let mut data_reply = Packet::new(
+                            packet.ip_header.dst_ip,
+                            packet.ip_header.src_ip,
+                            packet.tcp_header.dst_port,
+                            packet.tcp_header.src_port,
+                            response.to_vec(),
+                        );
+                        data_reply.tcp_header.flags = TcpFlags::ACK;
+                        data_reply.tcp_header.seq = conn.server_seq;
+                        data_reply.tcp_header.ack = conn.client_seq;
+                        data_reply.tcp_header.window = 65535;
+
+                        if socket.send(&data_reply).is_ok() {
+                            println!(
+                                "[5/6] 发送数据 to {}:{} len={} data=\"{}\"",
+                                data_reply.ip_header.dst_ip,
+                                data_reply.tcp_header.dst_port,
+                                response.len(),
+                                String::from_utf8_lossy(response)
+                            );
+                            conn.server_seq = conn.server_seq.wrapping_add(response.len() as u32);
+                        }
+
+                        conn.last_activity = Instant::now();
+                        continue;
+                    }
+
+                    // 处理 FIN - 四次挥手第一步（客户端发起）
+                    if (conn.state == ServerState::Established || conn.state == ServerState::SynReceived)
+                        && packet.tcp_header.flags.contains(TcpFlags::FIN)
+                    {
+                        println!(
+                            "[6/6] 收到 FIN from {}:{} - 开始关闭连接",
+                            packet.ip_header.src_ip, packet.tcp_header.src_port
+                        );
+
+                        conn.client_seq = packet.tcp_header.seq.wrapping_add(1);
+
+                        // 发送 ACK - 四次挥手第二步
+                        let mut ack_reply = Packet::new(
+                            packet.ip_header.dst_ip,
+                            packet.ip_header.src_ip,
+                            packet.tcp_header.dst_port,
+                            packet.tcp_header.src_port,
+                            Vec::new(),
+                        );
+                        ack_reply.tcp_header.flags = TcpFlags::ACK;
+                        ack_reply.tcp_header.seq = conn.server_seq;
+                        ack_reply.tcp_header.ack = conn.client_seq;
+                        ack_reply.tcp_header.window = 65535;
+
+                        if socket.send(&ack_reply).is_ok() {
+                            println!(
+                                "[6/6] 发送 ACK to {}:{}",
+                                ack_reply.ip_header.dst_ip, ack_reply.tcp_header.dst_port
+                            );
+                        }
+
+                        // 发送 FIN+ACK - 四次挥手第三步
+                        let mut fin_reply = Packet::new(
+                            packet.ip_header.dst_ip,
+                            packet.ip_header.src_ip,
+                            packet.tcp_header.dst_port,
+                            packet.tcp_header.src_port,
+                            Vec::new(),
+                        );
+                        fin_reply.tcp_header.flags = TcpFlags::FIN | TcpFlags::ACK;
+                        fin_reply.tcp_header.seq = conn.server_seq;
+                        fin_reply.tcp_header.ack = conn.client_seq;
+                        fin_reply.tcp_header.window = 65535;
+
+                        if socket.send(&fin_reply).is_ok() {
+                            println!(
+                                "[6/6] 发送 FIN+ACK to {}:{}",
+                                fin_reply.ip_header.dst_ip, fin_reply.tcp_header.dst_port
+                            );
+                            conn.state = ServerState::FinWait;
+                            conn.server_seq = conn.server_seq.wrapping_add(1);
+                        }
+
+                        continue;
+                    }
+
+                    // 处理最后的 ACK - 四次挥手第四步
+                    if conn.state == ServerState::FinWait
+                        && packet.tcp_header.flags.contains(TcpFlags::ACK)
+                        && packet.tcp_header.ack == conn.server_seq
+                    {
+                        println!(
+                            "[6/6] 收到最后的 ACK from {}:{} - 连接关闭",
+                            packet.ip_header.src_ip, packet.tcp_header.src_port
+                        );
+                        connections.remove(&key);
+                        println!();
+                        println!("=== 连接完成，等待新连接 ===");
+                        println!();
+                        continue;
+                    }
                 }
             }
-            Err(SocketError::Timeout) => continue,
+            Err(SocketError::Timeout) => {
+                // 清理超时连接
+                let now = Instant::now();
+                connections.retain(|_, conn| now.duration_since(conn.last_activity) < Duration::from_secs(30));
+            }
             Err(e) => {
                 eprintln!("[ERROR] 接收错误: {:?}", e);
             }
@@ -142,9 +319,19 @@ fn run_server(args: &[String]) {
 // 客户端
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ClientState {
+    Closed,
+    SynSent,
+    Established,
+    FinWait1,
+    FinWait2,
+    TimeWait,
+}
+
 fn run_client(args: &[String]) {
     if args.len() < 3 {
-        eprintln!("用法: {} client <server_ip> [port] [count]", args[0]);
+        eprintln!("用法: {} client <server_ip> [port]", args[0]);
         return;
     }
 
@@ -157,11 +344,9 @@ fn run_client(args: &[String]) {
     };
 
     let port: u16 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_PORT);
-    let count: u32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(10);
 
-    println!("=== Raw Socket 客户端 ===");
+    println!("=== TCP 客户端 ===");
     println!("服务器: {}:{}", server_ip, port);
-    println!("发送数量: {}", count);
     println!();
 
     let local_ip = match get_outbound_ip(server_ip) {
@@ -191,132 +376,247 @@ fn run_client(args: &[String]) {
     };
 
     println!();
-    println!("开始测试...");
+    println!("开始 TCP 连接...");
     println!();
 
     let local_port: u16 = 44444;
-    let mut stats = Stats::new();
-    let mut success_count = 0u32;
-    let start_time = Instant::now();
+    let mut state = ClientState::Closed;
+    let mut client_seq = 1000u32;
+    let mut server_seq = 0u32;
 
-    for i in 0..count {
-        let seq_num = 1000 + i;
+    // ========================================================================
+    // 第一步：发送 SYN（三次握手第一步）
+    // ========================================================================
+    println!("[1/6] 发送 SYN to {}:{} seq={}", server_ip, port, client_seq);
 
-        // 发送 SYN 包
-        let mut packet = Packet::new(local_ip, server_ip, local_port, port, Vec::new());
-        packet.tcp_header.flags = TcpFlags::SYN;
-        packet.tcp_header.seq = seq_num;
-        packet.tcp_header.window = 65535;
+    let mut syn_packet = Packet::new(local_ip, server_ip, local_port, port, Vec::new());
+    syn_packet.tcp_header.flags = TcpFlags::SYN;
+    syn_packet.tcp_header.seq = client_seq;
+    syn_packet.tcp_header.window = 65535;
 
-        let send_time = Instant::now();
+    if socket.send(&syn_packet).is_err() {
+        eprintln!("[ERROR] 发送 SYN 失败");
+        return;
+    }
 
-        match socket.send(&packet) {
-            Ok(n) => {
-                stats.packets_sent += 1;
-                stats.bytes_sent += n as u64;
+    state = ClientState::SynSent;
+    let syn_time = Instant::now();
+
+    // ========================================================================
+    // 第二步：接收 SYN+ACK（三次握手第二步）
+    // ========================================================================
+    let mut syn_ack_received = false;
+    while syn_time.elapsed() < TIMEOUT && !syn_ack_received {
+        match socket.receive(Some(Duration::from_millis(100))) {
+            Ok(packet) => {
+                if packet.ip_header.src_ip == server_ip
+                    && packet.tcp_header.src_port == port
+                    && packet.tcp_header.dst_port == local_port
+                    && packet.tcp_header.flags.contains(TcpFlags::SYN)
+                    && packet.tcp_header.flags.contains(TcpFlags::ACK)
+                    && packet.tcp_header.ack == client_seq.wrapping_add(1)
+                {
+                    server_seq = packet.tcp_header.seq;
+                    client_seq = client_seq.wrapping_add(1);
+
+                    println!(
+                        "[2/6] 收到 SYN+ACK from {}:{} seq={} ack={}",
+                        packet.ip_header.src_ip,
+                        packet.tcp_header.src_port,
+                        server_seq,
+                        packet.tcp_header.ack
+                    );
+
+                    syn_ack_received = true;
+                }
             }
+            Err(SocketError::Timeout) => continue,
             Err(e) => {
-                eprintln!("[ERROR] 发送 #{} 失败: {:?}", i, e);
-                continue;
+                eprintln!("[ERROR] 接收错误: {:?}", e);
             }
         }
+    }
 
-        // 等待回复
-        let timeout = Duration::from_secs(2);
-        let mut received = false;
+    if !syn_ack_received {
+        eprintln!("[ERROR] 未收到 SYN+ACK，连接超时");
+        return;
+    }
 
-        while send_time.elapsed() < timeout {
-            match socket.receive(Some(Duration::from_millis(100))) {
-                Ok(reply) => {
-                    if reply.ip_header.src_ip == server_ip
-                        && reply.tcp_header.src_port == port
-                        && reply.tcp_header.flags.contains(TcpFlags::SYN)
-                        && reply.tcp_header.flags.contains(TcpFlags::ACK)
-                        && reply.tcp_header.ack == seq_num.wrapping_add(1)
+    // ========================================================================
+    // 第三步：发送 ACK（三次握手第三步）
+    // ========================================================================
+    println!("[3/6] 发送 ACK to {}:{} ack={}", server_ip, port, server_seq.wrapping_add(1));
+
+    let mut ack_packet = Packet::new(local_ip, server_ip, local_port, port, Vec::new());
+    ack_packet.tcp_header.flags = TcpFlags::ACK;
+    ack_packet.tcp_header.seq = client_seq;
+    ack_packet.tcp_header.ack = server_seq.wrapping_add(1);
+    ack_packet.tcp_header.window = 65535;
+
+    if socket.send(&ack_packet).is_err() {
+        eprintln!("[ERROR] 发送 ACK 失败");
+        return;
+    }
+
+    state = ClientState::Established;
+    server_seq = server_seq.wrapping_add(1);
+
+    println!("[3/6] 连接建立成功！");
+    println!();
+
+    std::thread::sleep(Duration::from_millis(100));
+
+    // ========================================================================
+    // 第四步：发送数据
+    // ========================================================================
+    let message = b"Hello from client!";
+    println!("[4/6] 发送数据 to {}:{} len={} data=\"{}\"",
+        server_ip, port, message.len(), String::from_utf8_lossy(message));
+
+    let mut data_packet = Packet::new(local_ip, server_ip, local_port, port, message.to_vec());
+    data_packet.tcp_header.flags = TcpFlags::ACK;
+    data_packet.tcp_header.seq = client_seq;
+    data_packet.tcp_header.ack = server_seq;
+    data_packet.tcp_header.window = 65535;
+
+    if socket.send(&data_packet).is_err() {
+        eprintln!("[ERROR] 发送数据失败");
+        return;
+    }
+
+    client_seq = client_seq.wrapping_add(message.len() as u32);
+
+    // ========================================================================
+    // 第五步：接收服务器响应数据
+    // ========================================================================
+    let data_time = Instant::now();
+    let mut data_received = false;
+
+    while data_time.elapsed() < TIMEOUT && !data_received {
+        match socket.receive(Some(Duration::from_millis(100))) {
+            Ok(packet) => {
+                if packet.ip_header.src_ip == server_ip
+                    && packet.tcp_header.src_port == port
+                    && packet.tcp_header.dst_port == local_port
+                    && !packet.payload.is_empty()
+                {
+                    let response = String::from_utf8_lossy(&packet.payload);
+                    println!(
+                        "[5/6] 收到数据 from {}:{} len={} data=\"{}\"",
+                        packet.ip_header.src_ip,
+                        packet.tcp_header.src_port,
+                        packet.payload.len(),
+                        response
+                    );
+
+                    server_seq = packet.tcp_header.seq.wrapping_add(packet.payload.len() as u32);
+                    data_received = true;
+
+                    // 发送 ACK 确认收到数据
+                    let mut ack_data = Packet::new(local_ip, server_ip, local_port, port, Vec::new());
+                    ack_data.tcp_header.flags = TcpFlags::ACK;
+                    ack_data.tcp_header.seq = client_seq;
+                    ack_data.tcp_header.ack = server_seq;
+                    ack_data.tcp_header.window = 65535;
+                    let _ = socket.send(&ack_data);
+                }
+            }
+            Err(SocketError::Timeout) => continue,
+            Err(e) => {
+                eprintln!("[ERROR] 接收错误: {:?}", e);
+            }
+        }
+    }
+
+    if !data_received {
+        println!("[WARN] 未收到服务器响应数据");
+    }
+
+    println!();
+    std::thread::sleep(Duration::from_millis(200));
+
+    // ========================================================================
+    // 第六步：四次挥手 - 发送 FIN（第一步）
+    // ========================================================================
+    println!("[6/6] 发送 FIN to {}:{} - 开始关闭连接", server_ip, port);
+
+    let mut fin_packet = Packet::new(local_ip, server_ip, local_port, port, Vec::new());
+    fin_packet.tcp_header.flags = TcpFlags::FIN | TcpFlags::ACK;
+    fin_packet.tcp_header.seq = client_seq;
+    fin_packet.tcp_header.ack = server_seq;
+    fin_packet.tcp_header.window = 65535;
+
+    if socket.send(&fin_packet).is_err() {
+        eprintln!("[ERROR] 发送 FIN 失败");
+        return;
+    }
+
+    state = ClientState::FinWait1;
+    client_seq = client_seq.wrapping_add(1);
+
+    // ========================================================================
+    // 接收服务器的 ACK（四次挥手第二步）
+    // ========================================================================
+    let fin_time = Instant::now();
+    let mut ack_received = false;
+    let mut fin_ack_received = false;
+
+    while fin_time.elapsed() < TIMEOUT {
+        match socket.receive(Some(Duration::from_millis(100))) {
+            Ok(packet) => {
+                if packet.ip_header.src_ip == server_ip
+                    && packet.tcp_header.src_port == port
+                    && packet.tcp_header.dst_port == local_port
+                {
+                    // 收到 ACK
+                    if !ack_received
+                        && packet.tcp_header.flags.contains(TcpFlags::ACK)
+                        && !packet.tcp_header.flags.contains(TcpFlags::FIN)
+                        && packet.tcp_header.ack == client_seq
                     {
-                        let rtt = send_time.elapsed();
-                        stats.packets_received += 1;
-                        stats.bytes_received += 40;
-                        stats.total_rtt_ms += rtt.as_millis() as u64;
-                        success_count += 1;
-                        received = true;
+                        println!("[6/6] 收到 ACK from {}:{}", packet.ip_header.src_ip, packet.tcp_header.src_port);
+                        ack_received = true;
+                        state = ClientState::FinWait2;
+                    }
 
-                        println!(
-                            "[{}/{}] seq={} -> ack={} RTT={:.2}ms",
-                            success_count,
-                            count,
-                            seq_num,
-                            reply.tcp_header.ack,
-                            rtt.as_secs_f64() * 1000.0
-                        );
+                    // 收到 FIN+ACK（四次挥手第三步）
+                    if packet.tcp_header.flags.contains(TcpFlags::FIN)
+                        && packet.tcp_header.flags.contains(TcpFlags::ACK)
+                    {
+                        println!("[6/6] 收到 FIN+ACK from {}:{}", packet.ip_header.src_ip, packet.tcp_header.src_port);
+                        server_seq = packet.tcp_header.seq.wrapping_add(1);
+                        fin_ack_received = true;
+
+                        // 发送最后的 ACK（四次挥手第四步）
+                        let mut final_ack = Packet::new(local_ip, server_ip, local_port, port, Vec::new());
+                        final_ack.tcp_header.flags = TcpFlags::ACK;
+                        final_ack.tcp_header.seq = client_seq;
+                        final_ack.tcp_header.ack = server_seq;
+                        final_ack.tcp_header.window = 65535;
+
+                        if socket.send(&final_ack).is_ok() {
+                            println!("[6/6] 发送最后的 ACK to {}:{}", server_ip, port);
+                            state = ClientState::TimeWait;
+                        }
                         break;
                     }
                 }
-                Err(SocketError::Timeout) => continue,
-                Err(_) => continue,
+            }
+            Err(SocketError::Timeout) => continue,
+            Err(e) => {
+                eprintln!("[ERROR] 接收错误: {:?}", e);
             }
         }
-
-        if !received {
-            println!("[{}/{}] seq={} 超时", i + 1, count, seq_num);
-        }
-
-        std::thread::sleep(Duration::from_millis(100));
     }
 
-    let total_time = start_time.elapsed();
-
-    println!();
-    println!("=== 测试结果 ===");
-    println!("发送: {} 包", stats.packets_sent);
-    println!("接收: {} 包", stats.packets_received);
-    println!(
-        "成功率: {:.1}%",
-        (success_count as f64 / count as f64) * 100.0
-    );
-    if stats.packets_received > 0 {
-        println!(
-            "平均 RTT: {:.2}ms",
-            stats.total_rtt_ms as f64 / stats.packets_received as f64
-        );
-    }
-    println!("总耗时: {:.2}s", total_time.as_secs_f64());
-}
-
-// ============================================================================
-// 统计
-// ============================================================================
-
-struct Stats {
-    packets_sent: u64,
-    packets_received: u64,
-    bytes_sent: u64,
-    bytes_received: u64,
-    total_rtt_ms: u64,
-    start_time: Instant,
-}
-
-impl Stats {
-    fn new() -> Self {
-        Self {
-            packets_sent: 0,
-            packets_received: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
-            total_rtt_ms: 0,
-            start_time: Instant::now(),
-        }
-    }
-
-    fn print(&self) {
-        let elapsed = self.start_time.elapsed().as_secs_f64();
-        println!(
-            "[STATS] {:.1}s | 发送: {} 包 ({:.1} KB) | 接收: {} 包 ({:.1} KB)",
-            elapsed,
-            self.packets_sent,
-            self.bytes_sent as f64 / 1024.0,
-            self.packets_received,
-            self.bytes_received as f64 / 1024.0
-        );
+    if fin_ack_received {
+        println!();
+        println!("=== 连接正常关闭 ===");
+        println!("状态: {:?}", state);
+    } else {
+        println!();
+        println!("=== 连接关闭（部分完成）===");
+        println!("状态: {:?}", state);
     }
 }
+

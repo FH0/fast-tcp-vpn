@@ -3,6 +3,26 @@ name = "fast-tcp-vpn"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "fast-tcp-vpn"
+path = "src/main.rs"
+
+[[bin]]
+name = "raw_socket_test"
+path = "src/bin/raw_socket_test.rs"
+
+[[bin]]
+name = "mock_server"
+path = "src/bin/mock_server.rs"
+
+[[bin]]
+name = "mock_client"
+path = "src/bin/mock_client.rs"
+
+[[bin]]
+name = "speed_test"
+path = "src/bin/speed_test.rs"
+
 [dependencies]
 thiserror = "1.0"
 libc = "0.2"
