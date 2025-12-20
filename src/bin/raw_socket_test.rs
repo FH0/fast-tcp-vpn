@@ -1,7 +1,6 @@
 //! Raw Socket 物理层测试
 //!
 //! 测试 raw socket 在客户端和服务端之间的双向通信能力。
-//! 服务端需要自动添加 iptables 规则阻止内核发送 RST 包。
 //!
 //! 用法:
 //!   服务端: sudo ./raw_socket_test server [port]
@@ -11,13 +10,10 @@ use fast_tcp_vpn::infrastructure::packet::{Packet, TcpFlags};
 use fast_tcp_vpn::infrastructure::socket::{
     get_outbound_ip, LinuxRawSocket, PacketReceiver, PacketSender, SocketError,
 };
-use scopeguard::defer;
 use std::net::Ipv4Addr;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 const DEFAULT_PORT: u16 = 54321;
-const TIMEOUT_BIN: &str = "/usr/bin/timeout";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -54,19 +50,6 @@ fn run_server(args: &[String]) {
     println!("=== Raw Socket 服务端 ===");
     println!("端口: {}", port);
     println!();
-
-    // 添加 iptables 规则阻止内核发送 RST 包
-    if !add_iptables_rule(port) {
-        eprintln!("[ERROR] 无法添加 iptables 规则");
-        return;
-    }
-    println!("[OK] iptables 规则已添加 (阻止端口 {} 的 RST 包)", port);
-
-    // 使用 defer 确保退出时删除规则
-    defer! {
-        remove_iptables_rule(port);
-        println!("[OK] iptables 规则已删除");
-    }
 
     // 创建 raw socket
     let socket = match LinuxRawSocket::new() {
@@ -298,58 +281,6 @@ fn run_client(args: &[String]) {
         );
     }
     println!("总耗时: {:.2}s", total_time.as_secs_f64());
-}
-
-// ============================================================================
-// iptables 管理
-// ============================================================================
-
-fn add_iptables_rule(port: u16) -> bool {
-    let status = Command::new(TIMEOUT_BIN)
-        .args([
-            "5",
-            "iptables",
-            "-A",
-            "OUTPUT",
-            "-p",
-            "tcp",
-            "--tcp-flags",
-            "RST",
-            "RST",
-            "--sport",
-            &port.to_string(),
-            "-j",
-            "DROP",
-        ])
-        .status();
-
-    match status {
-        Ok(s) => s.success(),
-        Err(e) => {
-            eprintln!("[ERROR] 执行 iptables 失败: {}", e);
-            false
-        }
-    }
-}
-
-fn remove_iptables_rule(port: u16) {
-    let _ = Command::new(TIMEOUT_BIN)
-        .args([
-            "5",
-            "iptables",
-            "-D",
-            "OUTPUT",
-            "-p",
-            "tcp",
-            "--tcp-flags",
-            "RST",
-            "RST",
-            "--sport",
-            &port.to_string(),
-            "-j",
-            "DROP",
-        ])
-        .status();
 }
 
 // ============================================================================
