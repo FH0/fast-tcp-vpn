@@ -1,4 +1,4 @@
-use crate::infrastructure::tcp::{
+use crate::domain::packet::tcp::{
     TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_PSH, TCP_FLAG_RST, TCP_FLAG_SYN, TcpPacket,
 };
 use bytes::Bytes;

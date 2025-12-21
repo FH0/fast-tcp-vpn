@@ -1,6 +1,6 @@
-use crate::infrastructure::ip::Ipv4Packet;
+use crate::domain::packet::ip::Ipv4Packet;
+use crate::domain::packet::tcp::{TCP_FLAG_SYN, TcpPacket};
 use crate::infrastructure::raw_socket::RawTcpSocket;
-use crate::infrastructure::tcp::{TCP_FLAG_SYN, TcpPacket};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::io;

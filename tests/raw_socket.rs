@@ -37,8 +37,8 @@ fn test_receive_10_packets() {
 }
 
 use bytes::Bytes;
-use fast_tcp_vpn::infrastructure::ip::Ipv4Packet;
-use fast_tcp_vpn::infrastructure::tcp::{
+use fast_tcp_vpn::domain::packet::ip::Ipv4Packet;
+use fast_tcp_vpn::domain::packet::tcp::{
     TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_PSH, TCP_FLAG_SYN, TcpPacket,
 };
 use std::time::{Duration, Instant};

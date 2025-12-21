@@ -1,4 +1,4 @@
-use crate::infrastructure::tcp::TcpPacket;
+use crate::domain::packet::tcp::TcpPacket;
 use std::io;
 use std::process::Command;
 use std::sync::{Arc, mpsc};

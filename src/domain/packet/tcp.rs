@@ -183,6 +183,6 @@ impl TcpPacket {
         pseudo_header.extend_from_slice(&(tcp_bytes.len() as u16).to_be_bytes());
         pseudo_header.extend_from_slice(&tcp_bytes);
 
-        self.checksum = crate::infrastructure::ip::calculate_checksum(&pseudo_header);
+        self.checksum = crate::domain::packet::ip::calculate_checksum(&pseudo_header);
     }
 }
