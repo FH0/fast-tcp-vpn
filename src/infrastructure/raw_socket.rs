@@ -8,7 +8,6 @@ use std::os::unix::io::{AsRawFd, RawFd};
 pub struct RawTcpSocket {
     fd: RawFd,
     interface_name: String,
-    port: u16,
 }
 
 impl RawTcpSocket {
@@ -17,8 +16,7 @@ impl RawTcpSocket {
     /// 设置 IP_HDRINCL 以允许手动构建 IP 首部。
     ///
     /// 注意：创建原始套接字需要 CAP_NET_RAW 权限或 root 权限。
-    /// 此函数还会自动添加一条 iptables 规则，防止内核对该网卡和端口发送 RST 报文。
-    pub fn new(interface_name: &str, port: u16) -> io::Result<Self> {
+    pub fn new(interface_name: &str) -> io::Result<Self> {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_TCP) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
@@ -59,45 +57,9 @@ impl RawTcpSocket {
             return Err(err);
         }
 
-        // 自动添加 iptables 规则，防止内核发送 RST。
-        // 命令：iptables -A OUTPUT -o <interface> -p tcp --sport <port> --tcp-flags RST RST -j DROP
-        let status = std::process::Command::new("iptables")
-            .args([
-                "-A",
-                "OUTPUT",
-                "-o",
-                interface_name,
-                "-p",
-                "tcp",
-                "--sport",
-                &port.to_string(),
-                "--tcp-flags",
-                "RST",
-                "RST",
-                "-j",
-                "DROP",
-            ])
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {
-                println!(
-                    "Successfully added iptables rule for {} port {}",
-                    interface_name, port
-                );
-            }
-            Ok(s) => {
-                eprintln!("Warning: iptables command exited with status: {}", s);
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to execute iptables: {}", e);
-            }
-        }
-
         Ok(Self {
             fd,
             interface_name: interface_name.to_string(),
-            port,
         })
     }
 
@@ -209,37 +171,6 @@ impl Drop for RawTcpSocket {
         // 关闭套接字
         unsafe {
             libc::close(self.fd);
-        }
-
-        // 自动删除 iptables 规则
-        let status = std::process::Command::new("iptables")
-            .args([
-                "-D",
-                "OUTPUT",
-                "-o",
-                &self.interface_name,
-                "-p",
-                "tcp",
-                "--sport",
-                &self.port.to_string(),
-                "--tcp-flags",
-                "RST",
-                "RST",
-                "-j",
-                "DROP",
-            ])
-            .status();
-
-        match status {
-            Ok(s) if s.success() => {
-                println!(
-                    "Successfully removed iptables rule for {} port {}",
-                    self.interface_name, self.port
-                );
-            }
-            _ => {
-                // Ignore errors during drop cleanup
-            }
         }
     }
 }

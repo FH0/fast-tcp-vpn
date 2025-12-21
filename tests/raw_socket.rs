@@ -5,7 +5,7 @@ fn test_receive_10_packets() {
     // 注意：此测试需要 root 权限或 CAP_NET_RAW。
     // 如果没有权限，该测试应当被跳过或预期失败。
     // 我们使用 "eth0" 作为测试的网络接口。
-    let socket = match RawTcpSocket::new("eth0", 0) {
+    let socket = match RawTcpSocket::new("eth0") {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to create raw socket (maybe missing root?): {}", e);
@@ -52,12 +52,62 @@ fn test_tcp_http_request() {
     let dst_port = 80;
     let dst_ip = [1, 1, 1, 1];
 
-    let socket = match RawTcpSocket::new(interface, src_port) {
+    let socket = match RawTcpSocket::new(interface) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to create raw socket: {}", e);
             return;
         }
+    };
+
+    // 手动添加 iptables 规则，防止内核发送 RST
+    let _ = std::process::Command::new("iptables")
+        .args([
+            "-A",
+            "OUTPUT",
+            "-o",
+            interface,
+            "-p",
+            "tcp",
+            "--sport",
+            &src_port.to_string(),
+            "--tcp-flags",
+            "RST",
+            "RST",
+            "-j",
+            "DROP",
+        ])
+        .status();
+
+    // 在测试结束时尝试清理
+    struct Cleanup {
+        interface: &'static str,
+        port: u16,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("iptables")
+                .args([
+                    "-D",
+                    "OUTPUT",
+                    "-o",
+                    self.interface,
+                    "-p",
+                    "tcp",
+                    "--sport",
+                    &self.port.to_string(),
+                    "--tcp-flags",
+                    "RST",
+                    "RST",
+                    "-j",
+                    "DROP",
+                ])
+                .status();
+        }
+    }
+    let _cleanup = Cleanup {
+        interface,
+        port: src_port,
     };
 
     let src_ip = socket.get_local_ip().expect("Failed to get local IP");
