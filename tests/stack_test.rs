@@ -6,7 +6,9 @@ fn test_stack_http_request() {
     // 注意：此测试需要 root 权限和外部网络访问。
     // 如果没有权限，该测试应当被跳过或预期失败。
     let interface = "eth0";
-    let stack = Stack::new(interface).expect("Failed to create stack");
+    let socket = fast_tcp_vpn::infrastructure::raw_socket::RawTcpSocket::new(interface)
+        .expect("Failed to create raw socket");
+    let stack = Stack::new(Box::new(socket), interface).expect("Failed to create stack");
     let dst_ip = [1, 1, 1, 1];
     let dst_port = 80;
 

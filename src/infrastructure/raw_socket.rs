@@ -166,6 +166,20 @@ impl RawTcpSocket {
     }
 }
 
+impl crate::domain::device::NetworkDevice for RawTcpSocket {
+    fn send_packet(&self, packet: &Ipv4Packet) -> io::Result<usize> {
+        self.send_packet(packet)
+    }
+
+    fn receive_packet(&self) -> io::Result<Ipv4Packet> {
+        self.receive_packet()
+    }
+
+    fn get_local_ip(&self) -> io::Result<[u8; 4]> {
+        self.get_local_ip()
+    }
+}
+
 impl Drop for RawTcpSocket {
     fn drop(&mut self) {
         // 关闭套接字

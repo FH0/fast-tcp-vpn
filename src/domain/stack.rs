@@ -1,6 +1,6 @@
+use crate::domain::device::NetworkDevice;
 use crate::domain::packet::ip::Ipv4Packet;
 use crate::domain::packet::tcp::{TCP_FLAG_SYN, TcpPacket};
-use crate::infrastructure::raw_socket::RawTcpSocket;
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::io;
@@ -18,7 +18,7 @@ pub struct Stack {
 }
 
 pub(crate) struct StackInner {
-    pub(crate) socket: RawTcpSocket,
+    pub(crate) socket: Box<dyn NetworkDevice>,
     pub(crate) local_ip: [u8; 4],
     pub(crate) interface_name: String,
     pub(crate) streams: Mutex<HashMap<ConnectionId, TcpStreamHandle>>,
@@ -26,15 +26,12 @@ pub(crate) struct StackInner {
 }
 
 impl Stack {
-    /// 创建一个新的 TCP 协议栈
-    pub fn new(interface_name: &str) -> io::Result<Self> {
-        // 创建一个用于收发的原始套接字，映射到指定网卡。
-        // 端口设为 0，因为 Stack 本身不绑定特定端口，具体端口由 Stream 或 Listener 管理。
-        let socket = RawTcpSocket::new(interface_name)?;
-        let local_ip = socket.get_local_ip()?;
+    /// 使用指定的网络设备创建一个新的 TCP 协议栈
+    pub fn new(device: Box<dyn NetworkDevice>, interface_name: &str) -> io::Result<Self> {
+        let local_ip = device.get_local_ip()?;
 
         let inner = Arc::new(StackInner {
-            socket,
+            socket: device,
             local_ip,
             interface_name: interface_name.to_string(),
             streams: Mutex::new(HashMap::new()),
